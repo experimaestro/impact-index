@@ -1,12 +1,12 @@
 use std::fmt;
 
-use ndarray::{ArrayBase, Ix1, Data};
+use ndarray::{ArrayBase, Ix1, Data, Dim};
 
 pub type DocId = u64;
 pub type TermIndex = usize;
 pub type ImpactValue = f32;
 
-/** Contains the impacts */
+/// Impact value and its document
 struct TermImpact {
     docid: DocId,
     value: ImpactValue
@@ -18,6 +18,7 @@ impl std::fmt::Display for TermImpact {
     }
 }
 
+/// The set of postings
 struct TermsImpacts {
     postings: Vec<Vec<TermImpact>>
 }
@@ -43,14 +44,6 @@ impl TermsImpacts {
     }
 }
 
-pub fn test() {
-    let mut impacts = TermsImpacts::new(232);
-
-    impacts.add_impact(3, 932, 1.23);
-
-    println!("{}", impacts.postings[3][0]);
-
-}
 
 /// The indexation
 pub struct Indexer {
@@ -58,15 +51,16 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    pub fn new() -> Indexer {
-        Indexer { impacts: TermsImpacts::new(100) }
+    pub fn new(nterms: u32) -> Indexer {
+        Indexer { impacts: TermsImpacts::new(nterms) }
     }
 
     pub fn add<S, T>(&mut self, docid: DocId, terms: &ArrayBase<S, Ix1>, values: &ArrayBase<T, Ix1>) 
     where S: Data<Elem = TermIndex>, T: Data<Elem = ImpactValue>
     {
+        assert!(terms.len() == values.len(), "Value and term lists should have the same length");
         for ix in 1..terms.len() {
-            &self.impacts.add_impact(terms[ix], docid, values[ix]) 
+            self.impacts.add_impact(terms[ix], docid, values[ix]) 
         }
     }
 }

@@ -13,7 +13,7 @@ mod tests {
         let mut values = array![1.2, 2.5, 3.1, 2.3];
         
 
-        indexer.add(0, termix, values)
+        indexer.add(0, &termix, &values);
         assert_eq!(3, 3);
     }
 

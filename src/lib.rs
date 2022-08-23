@@ -5,49 +5,52 @@ pub mod index {
     pub mod sparse;
 }
 
-use index::sparse::{test as sparse_test};
+use index::sparse::{Indexer as _SparseIndexer, DocId, TermIndex, ImpactValue};
 
 use numpy::ndarray::{ArrayD, ArrayViewD, ArrayViewMutD};
-use numpy::{IntoPyArray, PyArrayDyn, PyReadonlyArrayDyn};
-use pyo3::{pymodule, types::PyModule, PyResult, Python};
+use numpy::{IntoPyArray, PyArrayDyn, PyReadonlyArrayDyn, PyArray2, PyArray1, PyReadonlyArray1};
 
-/// Formats the sum of two numbers as string.
-#[pyfunction]
-fn sum_as_string(a: usize, b: usize) -> PyResult<String> {
-    Ok((a + b).to_string())
-}
+// use pyo3::{pymodule, types::PyModule, PyResult, Python};
 
 #[pyfunction]
 fn yes() -> PyResult<String> {
-    sparse_test();
     Ok("Yes".to_string())
 }
 
 
-/// A Python module implemented in Rust.
-#[pymodule]
-fn xpmir_rust(_py: Python, m: &PyModule) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(sum_as_string, m)?)?;
-    m.add_function(wrap_pyfunction!(yes, m)?)?;
+#[pyclass]
+struct SparseIndexer {
+    indexer: _SparseIndexer
+}
 
-    // example using a mutable borrow to modify an array in-place
-    fn mult(a: f64, mut x: ArrayViewMutD<'_, f64>) {
-        x *= a;
+#[pymethods] 
+/// Each document is a sparse vector
+impl SparseIndexer {
+    #[new]
+    fn new(nterms: u32) -> Self {
+        SparseIndexer { indexer: _SparseIndexer::new(nterms) }
     }
     
-    // wrapper of `mult`
-    #[pyfn(m)]
-    #[pyo3(name = "mult")]
-    fn mult_py(_py: Python<'_>, a: f64, x: &PyArrayDyn<f64>) {
-        let x = unsafe { x.as_array_mut() };
-        mult(a, x);
+    /// Adds a new document to the index
+    fn add(&mut self, docid: DocId, terms: &PyArray1<TermIndex>, values: &PyArray1<ImpactValue>) -> PyResult<()> {
+        let terms_array = unsafe { terms.as_array() };
+        let values_array = unsafe { values.as_array() };
+        self.indexer.add(docid, &terms_array, &values_array);
+        Ok(())
     }
- 
- 
+}
+
+/// A Python module implemented in Rust.
+#[pymodule]
+fn xpmir_rust(_py: Python, m: &PyModule) -> PyResult<()> { 
     // Index submodule
     let submod = PyModule::new(_py, "index")?;
-    submod.add_function(wrap_pyfunction!(sum_as_string, submod)?)?;
     m.add_submodule(submod)?;
+
+    submod.add_class::<SparseIndexer>()?;
+    
+
+    
     Ok(())
 }
 
