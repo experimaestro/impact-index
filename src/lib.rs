@@ -1,4 +1,9 @@
 
+#[macro_use]
+extern crate simple_error;
+
+use std::path::{Path, PathBuf};
+
 use pyo3::prelude::*;
 mod tests;
 pub mod index {
@@ -27,8 +32,8 @@ struct SparseIndexer {
 /// Each document is a sparse vector
 impl SparseIndexer {
     #[new]
-    fn new(nterms: u32) -> Self {
-        SparseIndexer { indexer: _SparseIndexer::new(nterms) }
+    fn new(folder: &str) -> Self {
+        SparseIndexer { indexer: _SparseIndexer::new(Path::new(folder)) }
     }
     
     /// Adds a new document to the index

@@ -7,7 +7,7 @@ mod tests {
 
     #[test]
     fn test_add() {
-        let mut indexer = sparse::Indexer::new();
+        let mut indexer = sparse::Indexer::new(Path::new("/tmp/yo"));
 
         let mut termix = array![3, 10, 25, 40];
         let mut values = array![1.2, 2.5, 3.1, 2.3];

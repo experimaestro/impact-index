@@ -4,10 +4,16 @@ build-backend = "maturin"
 
 [project]
 name = "xpmir-rust"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
     "Programming Language :: Python :: Implementation :: PyPy",
 ]
+authors = [
+    {"email" = "benjamin@piwowarski.fr", name = "Benjamin Piwowarski"}
+]
+readme = "README.md"
 
+[package]
+licence = {file = "LICENCE.txt"}
