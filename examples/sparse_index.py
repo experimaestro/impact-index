@@ -11,15 +11,18 @@ with tempfile.TemporaryDirectory() as dir:
     print(f"Using directory {dir}")
     indexer = xpmir_rust.index.SparseIndexer(dir)
 
-    for i in range(NUM_DOCS):
+    for doc_id in range(NUM_DOCS):
         num_terms = np.random.randint(10, 50)
         terms = np.random.choice(range(NUM_TERMS), num_terms).astype(np.uint64)
         impacts = np.random.randn((num_terms)).astype(np.float32)
-        indexer.add(0, terms, impacts)
+        indexer.add(doc_id, terms, impacts)
 
 
-indexer.build()
+    indexer.build()
 
-for i in range(max(50, NUM_TERMS)):
-    for t in indexer.iter(i):
-        print(i, t.docid, t.value)
+    # for i in range(max(50, NUM_TERMS)):
+    #     for t in indexer.iter(i):
+    #         print(i, t.docid, t.value)
+
+
+    indexer.search({1: .2, 5: .5}, 10)

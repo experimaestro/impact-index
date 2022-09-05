@@ -2,17 +2,20 @@
 #[macro_use]
 extern crate simple_error;
 
-use std::{path::{Path}, sync::{Arc, Mutex}, borrow::BorrowMut, mem::{ManuallyDrop, transmute}};
+use std::{path::{Path}, sync::{Arc, Mutex}, collections::HashMap, ops::DerefMut};
 
-use pyo3::{prelude::*, exceptions::PyValueError};
+use pyo3::{prelude::*, types::PyList, types::PyDict, exceptions::PyValueError};
 mod tests;
+mod search;
+
 pub mod index {
     pub mod sparse;
 }
 
-use index::sparse::{Indexer as _SparseIndexer, DocId, TermIndex, ImpactValue, ForwardIndexTrait, TermImpactIterator, IndexerIterator};
+use index::sparse::{Indexer as _SparseIndexer, TermIndex, ImpactValue, ForwardIndexTrait, TermImpactIterator, daat::search_wand};
 
 use numpy::{PyArray1};
+use search::{DocId};
 
 
 // #[pymethods] 
@@ -31,7 +34,16 @@ struct PyTermImpact {
     value: ImpactValue,
 
     #[pyo3(get)]
-    pub docid: DocId
+    docid: DocId
+}
+
+#[pyclass]
+pub struct PyScoredDocument {
+    #[pyo3(get)]
+    score: f64,
+
+    #[pyo3(get)]
+    docid: DocId
 }
 
 #[pyclass]
@@ -93,6 +105,23 @@ impl SparseIndexer {
             // TODO: ugly but works since indexer is there
             iter: unsafe { extend_lifetime(indexer.iter(term)) }
         })
+    }
+
+    fn search(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        let mut indexer  = self.indexer.lock().unwrap();        
+
+        let query: HashMap<usize, f64> = py_query.extract()?;
+        let results = search_wand(indexer.deref_mut(), &query, top_k);
+
+        let list = Python::with_gil(|py| {
+            let v: Vec<PyScoredDocument> = results.iter().map(|r| PyScoredDocument {
+                docid: r.docid,
+                score: r.score
+            }).collect();
+            return v.into_py(py);
+        });
+
+        Ok(list)
     }
 }
 
