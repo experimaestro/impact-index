@@ -57,6 +57,7 @@ impl TopScoredDocuments {
         Self { heap: BinaryHeap::new(), top_k: top_k }
     }
 
+    /// Add a new candidate, and returns the new lower bound on scores
     pub fn add(&mut self, candidate: DocId, score: f64) -> f64 {
         if self.heap.len() < self.top_k {
             self.heap.push(ScoredDocument { docid: candidate, score: score });
@@ -64,7 +65,12 @@ impl TopScoredDocuments {
             self.heap.pop();
             self.heap.push(ScoredDocument { docid: candidate, score: score });
         }
-        self.heap.peek().unwrap().score
+        if self.heap.len() >= self.top_k {
+            self.heap.peek().unwrap().score
+        } else {
+            // If the heap is not full, returns -infinity
+            f64::NEG_INFINITY
+        }
     }
 
     pub fn into_sorted_vec(mut self) -> Vec<ScoredDocument> {
