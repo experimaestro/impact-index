@@ -16,3 +16,9 @@ serde = { version = "1.0", features = ["derive"] }
 ciborium = { version = "0.2" }
 simple-error = "0.2.3"
 byteorder = "1.4.3"
+
+[dev-dependencies]
+ntest = "0.8.1"
+rand = "0.8.5"
+rand_distr = "0.4.3"
+temp-dir = "0.1.11"

@@ -1,17 +1,23 @@
-use std::{collections::{HashMap, BinaryHeap}, cmp::{Ordering}};
+use std::{collections::{HashMap}};
 
-use crate::search::{ScoredDocument, DocId};
+use crate::{search::{ScoredDocument, TopScoredDocuments}, base::DocId};
 
-use super::{TermImpact, TermIndex};
+use crate::base::{TermIndex};
 
+use super::TermImpact;
 
 /**
  * WAND algorithm
  * 
- *  Broder, A. Z., Carmel, D., Herscovici, M., Soffer, A. & Zien, J. Efficient query evaluation using a two-level retrieval process. in Proceedings of the twelfth international conference on Information and knowledge management 426–434 (Association for Computing Machinery, 2003). doi:10.1145/956863.956944.
+ *  Broder, A. Z., Carmel, D., Herscovici, M., Soffer, A. & Zien, J. 
+ * Efficient query evaluation using a two-level retrieval process.
+ * Proceedings of the twelfth international conference on Information and knowledge management 426–434 
+ * (Association for Computing Machinery, 2003). 
+ * DOI 10.1145/956863.956944.
 */
 
-pub trait WandIterator<'a> {
+pub trait WandIterator {
+    /// Moves to the next document whose id is greater or equal than doc_id
     fn next(&mut self, doc_id: DocId) -> bool;
     
     /// Returns the current term impact
@@ -21,66 +27,45 @@ pub trait WandIterator<'a> {
     fn max(&self) -> f64;
 }
 
-pub trait WandIndex<'a> {
-    fn iterator(&'a self, term_ix: TermIndex) -> Box<dyn WandIterator<'a> + 'a>;
+pub trait WandIndex {
+    /// Returns a WAND iterator for a given term
+    /// 
+    /// ## Arguments
+    /// 
+    /// * `term_ix` The index of the term
+    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn WandIterator + 'a>;
 }
 
+/// Wraps an iterator with a query weight
 struct WandIteratorWrapper<'a> {
-    iterator: Box::<dyn WandIterator<'a> + 'a>,
+    iterator: Box<dyn WandIterator + 'a>,
     query_weight: f64
 }
 
-impl PartialEq for ScoredDocument {
-    fn eq(&self, other: &Self) -> bool {
-        self.score == other.score
-    }
-}
-
-impl Eq for ScoredDocument {}
-
-
-impl PartialOrd for ScoredDocument {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        match self.docid.partial_cmp(&other.docid) {
-            Some(core::cmp::Ordering::Equal) => {}
-            ord => return ord,
-        }
-        self.score.partial_cmp(&other.score)
-    }
-}
-
-impl Ord for ScoredDocument {
-    fn cmp(&self, other: &Self) -> Ordering {
-        // We want the minimum score
-        if self.score == other.score {
-            return Ordering::Equal;
-        }
-        if self.score < other.score {
-            return Ordering::Less;
-        }
-        Ordering::Greater
-    }
-}
 
 struct WandSearch<'a> {
-    cur_doc: DocId,
+    cur_doc: Option<DocId>,
     iterators: Vec<WandIteratorWrapper<'a>>
 }
 
 impl<'a> WandSearch<'a> {
-    fn new(index: &'a dyn WandIndex<'a>, query: &HashMap<TermIndex, f64>) -> Self {
+    fn new<'b: 'a>(index: &'b dyn WandIndex, query: &HashMap<TermIndex, f64>) -> Self {
         let mut iterators = Vec::new();
-        for mut iterator in query.into_iter().map(|(&ix, &weight)| WandIteratorWrapper {
-            iterator: index.iterator(ix),
-            query_weight: weight
-        }) {
-            if iterator.iterator.next(0) {
-                iterators.push(iterator)
+
+        for (&ix, &weight) in query.iter() {
+            let iterator = index.iterator(ix);
+
+            let mut wrapper = WandIteratorWrapper {
+                iterator: iterator,
+                query_weight: weight
+            };
+            if wrapper.iterator.next(0) {
+                iterators.push(wrapper)
             }
         }
 
         Self {
-            cur_doc: -1,
+            cur_doc: None,
             iterators: iterators
         }
     }
@@ -99,7 +84,8 @@ impl<'a> WandSearch<'a> {
         None
     }
 
-    fn pick_term(&self, up_to: usize) -> usize {
+    fn pick_term(&self, _up_to: usize) -> usize {
+        // We just pick the first term (might not be the wisest)
         0
     }
 
@@ -108,18 +94,23 @@ impl<'a> WandSearch<'a> {
 
         loop {
             if let Some(ix) = self.find_pivot_term(theta) {
+                eprintln!("Find some pivot term: {}", ix);
                 let pivot = self.iterators[ix].iterator.current().docid;
                 
-                if pivot <= self.cur_doc {
+                if match self.cur_doc {
+                    Some(cur) => pivot <= cur,
+                    None => false
+                } {
                     let term_ix = self.pick_term(ix);
                     if !self.iterators[term_ix].iterator.next(pivot) {
                         // Remove this iterator
+                        eprintln!("Removing iterator {}", ix);
                         self.iterators.remove(ix);
                     }
                 } else if self.iterators[0].iterator.current().docid == pivot {
                     /* Success: all preceding terms belong to the pivot */
-                    self.cur_doc = pivot;
-                    return Some(pivot);
+                    self.cur_doc = Some(pivot);
+                    return self.cur_doc;
                 } else {
                     /* not enough mass */
                     let term_ix = self.pick_term(ix);
@@ -128,21 +119,25 @@ impl<'a> WandSearch<'a> {
                         self.iterators.remove(ix);
                     }
                 }
+            } else {
+                return None;
             }
         } 
 
     }
 }
 
+
 /**
  * Search using the WAND algorithmw
  */
-pub fn search_wand<'a>(index: &'a dyn WandIndex<'a>, query: &HashMap<TermIndex, f64>, top_k: usize) -> Vec<ScoredDocument> {
-    let mut search : WandSearch<'a> = WandSearch::new(index, query);
+pub fn search_wand<'a>(index: &'a mut dyn WandIndex, query: &HashMap<TermIndex, f64>, top_k: usize) -> Vec<ScoredDocument> {
+    let mut search = WandSearch::new(index, query);
 
-    let mut results = BinaryHeap::<ScoredDocument>::new();
+    let mut results = TopScoredDocuments::new(top_k);
     let mut theta: f64 = 0.;
 
+    // Loop until there are no more candidates
     while let Some(candidate) = search.next(theta) {
         println!("Got a new candidate {}", candidate);
 
@@ -157,14 +152,9 @@ pub fn search_wand<'a>(index: &'a dyn WandIndex<'a>, query: &HashMap<TermIndex, 
         }
 
         // Update the heap
-        if results.len() < top_k {
-            results.push(ScoredDocument { docid: candidate, score: score });
-        } else if results.peek().expect("should not happen").score < score {
-            results.pop();
-            results.push(ScoredDocument { docid: candidate, score: score });
-            theta = f64::max(score, theta);
-        }
-
+        results.add(candidate, score);
+        theta = f64::max(score, theta);
     }
+    eprintln!("Finished searching");
     results.into_sorted_vec()
 }

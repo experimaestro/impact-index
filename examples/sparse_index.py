@@ -18,11 +18,10 @@ with tempfile.TemporaryDirectory() as dir:
         indexer.add(doc_id, terms, impacts)
 
 
-    indexer.build()
+    index = indexer.build()
 
     # for i in range(max(50, NUM_TERMS)):
     #     for t in indexer.iter(i):
     #         print(i, t.docid, t.value)
 
-
-    indexer.search({1: .2, 5: .5}, 10)
+    index.search({1: .2, 5: .5}, 10)
