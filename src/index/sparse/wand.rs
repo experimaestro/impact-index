@@ -1,5 +1,7 @@
 use std::{collections::{HashMap}, f32::NEG_INFINITY};
 
+use log::debug;
+
 use crate::{search::{ScoredDocument, TopScoredDocuments}, base::DocId};
 
 use crate::base::{TermIndex};
@@ -87,6 +89,7 @@ impl<'a> WandSearch<'a> {
                 return Some(ix);
             }
         }
+
         None
     }
 
@@ -106,21 +109,23 @@ impl<'a> WandSearch<'a> {
                     None => false
                 } {
                     // Pivot has already been considered, advance one iterator
+                    debug!("Pivot {} has already been considered [{}], advancing", pivot, ix);
                     let term_ix = self.pick_term(ix);
                     if !self.iterators[term_ix].iterator.next(pivot) {
                         // Remove this iterator
-                        self.iterators.remove(ix);
+                        self.iterators.remove(term_ix);
                     }
                 } else if self.iterators[0].iterator.current().docid == pivot {
                     /* Success: all preceding terms belong to the pivot */
                     self.cur_doc = Some(pivot);
+                    debug!("Computing score of {}", pivot);
                     return self.cur_doc;
                 } else {
                     /* not enough mass */
                     let term_ix = self.pick_term(ix);
                     if !self.iterators[term_ix].iterator.next(pivot) {
                         // Remove this iterator
-                        self.iterators.remove(ix);
+                        self.iterators.remove(term_ix);
                     }
                 }
             } else {

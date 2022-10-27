@@ -1,5 +1,6 @@
 use std::{path::{PathBuf, Path}, fs::File, io::{Seek, Write}, cell::Cell};
 
+use log::debug;
 use ndarray::{ArrayBase, Ix1, Data};
 use serde::{Serialize, Deserialize};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
@@ -110,7 +111,8 @@ impl TermsImpacts {
       
         // Get the stream position
         let position = self.postings_file.stream_position()?;
-        // eprintln!("Flush {} at {} (length {})", term_ix, position, len_postings);
+        debug!("Flush {} at {} (length {})", term_ix, position, len_postings);
+
         self.information.terms[term_ix].pages.push(TermIndexPageInformation {
             position: position,
             length: len_postings,
@@ -340,12 +342,14 @@ impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
     fn next(&mut self, doc_id: DocId) -> bool {
         while let Some(v) = self.iterator.next() {
             if v.docid >= doc_id {
+                debug!("[{}] Returning {} ({})", self.iterator.term_ix, v.docid, v.value);
                 self.current_value = v;
                 return true
             }
+            debug!("[{}] Skipping {} ({}) / {}", self.iterator.term_ix, v.docid, v.value, doc_id);
         }
         
-        // println!("[{}] This is over", self.iterator.term_ix);
+        println!("[{}] This is over", self.iterator.term_ix);
         return false
     }
 
