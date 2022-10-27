@@ -27,7 +27,7 @@ mod tests {
     use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait, load_forward_index}, wand::search_wand}, search::{TopScoredDocuments, ScoredDocument}, base::{TermIndex, ImpactValue}};
     use ndarray::{array, Array};
     use ntest::{timeout, assert_true};
-    use rand::thread_rng;
+    use rand::{thread_rng, rngs::{ThreadRng, StdRng}, SeedableRng, RngCore};
     use rand_distr::{Poisson, Distribution, LogNormal};
     use temp_dir::TempDir;
     use std::cmp::min;
@@ -49,12 +49,11 @@ mod tests {
     }
 
 
-    fn createDocument(lambda_words: f32, max_words: usize, vocabulary_size: usize) -> TestDocument {
-        let mut rng = thread_rng();
+    fn createDocument(lambda_words: f32, max_words: usize, vocabulary_size: usize, rng: &mut dyn RngCore) -> TestDocument {
         let poi = Poisson::new(lambda_words).unwrap();
-        let num_words = 1 + poi.sample(&mut rng) as usize;
+        let num_words = 1 + poi.sample(rng) as usize;
 
-        let term_ids = rand::seq::index::sample(&mut rng, vocabulary_size, min(num_words, max_words)).into_vec();
+        let term_ids = rand::seq::index::sample(rng, vocabulary_size, min(num_words, max_words)).into_vec();
         let log_normal = LogNormal::new(0., 1.).unwrap();
 
         let mut document = TestDocument { terms: Vec::new() };
@@ -62,7 +61,7 @@ mod tests {
         for term_ix in term_ids.iter() {
             document.terms.push(TermWeight { 
                 term_ix: *term_ix, 
-                weight: log_normal.sample(&mut rng)
+                weight: log_normal.sample(rng)
             })
         }
 
@@ -78,17 +77,23 @@ mod tests {
     }
 
     impl TestIndex {
-        fn new(vocabulary_size: usize, document_count: i64, lambda_words: f32, max_words: usize) -> Self {
+        fn new(vocabulary_size: usize, document_count: i64, lambda_words: f32, max_words: usize, seed: Option<u64>) -> Self {
             let dir = TempDir::new().expect("Could not create temporary directory");
             let mut indexer = Indexer::new(&dir.path());
     
             let mut all_terms = HashMap::<TermIndex, Vec::<TermImpact>>::new();
             let mut documents = Vec::<TestDocument>::new();
-    
+            // let mut rng = thread_rng();
+            let mut rng = if let Some(seed) = seed {
+                StdRng::seed_from_u64(seed)
+            } else {
+                StdRng::from_entropy()
+            };
+
             // Creates documents
             for ix in 0..document_count { 
                 let doc_id = ix.try_into().unwrap();
-                let document = createDocument(lambda_words, max_words, vocabulary_size);
+                let document = createDocument(lambda_words, max_words, vocabulary_size, &mut rng);
     
                 let terms = Array::from_iter(document.terms.iter().map(
                     |tw| tw.term_ix
@@ -133,7 +138,7 @@ mod tests {
     
     #[test]
     fn test_index() {
-        let mut data = TestIndex::new(100, 1000, 5., 10);
+        let mut data = TestIndex::new(100, 1000, 5., 10, None);
         let index = data.indexer.to_forward_index();
 
         eprintln!("Index built in {}", &data.dir.path().display());
@@ -198,16 +203,19 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true, 100, 1000, 50., 50, 10)]
-    #[case(true, 100, 1000, 50., 50, 1)]
+    #[case(true, 100, 1000, 50., 50, 10, None)]
+    #[case(true, 100, 1000, 50., 50, 1, None)]
+    // Sparse documents (max 8 postings, 5 in average) )
+    #[case(true, 500, 500, 5., 8, 10, Some(1))]
     fn test_search(#[case] in_memory: bool,
         #[case] vocabulary_size: usize, 
         #[case] document_count: i64, 
         #[case] lambda_words: f32,
         #[case] max_words: usize,
-        #[case] top_k: usize
+        #[case] top_k: usize,
+        #[case] seed: Option<u64>
     ) {
-        let mut data = TestIndex::new(vocabulary_size, document_count, lambda_words, max_words);
+        let mut data = TestIndex::new(vocabulary_size, document_count, lambda_words, max_words, seed);
         let mut index = if in_memory {
             data.indexer.to_forward_index()
         } else {
@@ -220,9 +228,9 @@ mod tests {
 
         // Search with WAND
         let observed = search_wand(&mut index, &query, top_k);
-        eprintln!("Results are");
-        for result in observed.iter() {
-            eprintln!("document {}, score {}", result.docid, result.score);
+        eprintln!("(1) observed results");
+        for (ix, result) in observed.iter().enumerate() {
+            eprintln!(" [{}] document {}, score {}", ix, result.docid, result.score);
         }
 
         // Searching by iterating
@@ -239,10 +247,10 @@ mod tests {
                 top.add(doc_id.try_into().unwrap(), score);
             }
         }
-        eprintln!("Results are");
+        eprintln!("(2) expected results");
         let expected = top.into_sorted_vec();
-        for result in expected.iter() {
-            eprintln!("document {}, score {}", result.docid, result.score);
+        for (ix, result) in expected.iter().enumerate() {
+            eprintln!(" [{}] document {}, score {}", ix, result.docid, result.score);
         }
 
         vec_compare(&observed, &expected);
