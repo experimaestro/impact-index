@@ -11,6 +11,12 @@ mod tests {
         fn approx_eq(&self, other: &Self, delta: f64) -> bool;
     }
 
+    impl Clone for ScoredDocument {
+        fn clone(&self) -> Self {
+            Self { docid: self.docid.clone(), score: self.score.clone() }
+        }
+    }
+
     impl ApproxEq for ScoredDocument {
         fn approx_eq(&self, other: &Self, delta: f64) -> bool {
             (self.docid == other.docid) && ((self.score - other.score).abs() < delta)
@@ -150,10 +156,58 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_heap() {
+        let mut top = TopScoredDocuments::new(3);
+        assert!(top.add(0, 0.1) == f64::NEG_INFINITY);
+
+        let mut max = top.add(1, 0.2);
+        assert!(max == f64::NEG_INFINITY, "Expected -inf got {}", max);
+
+        max = top.add(2, 0.3);
+        assert!(max == 0.1, "Expected 0.1 got {}", max);
+
+        max = top.add(2, 0.05);
+        assert!(max == 0.1, "Expected 0.1 got {}", max);
+
+        max = top.add(3, 0.5);
+        assert!(max == 0.2, "Expected 0.2 got {}", max);
+
+
+        // Further tests
+        let top_k = 10;
+        let mut rng = rand::thread_rng();
+        let log_normal = LogNormal::new(0., 1.).unwrap();
+
+        let mut scored_documents : Vec::<ScoredDocument> = Vec::new();
+        top = TopScoredDocuments::new(top_k);
+        for doc_id in 0..10000 {
+            let score = log_normal.sample(&mut rng);
+            top.add(doc_id, score);
+            scored_documents.push(ScoredDocument { docid: doc_id, score });
+        }
+
+
+        // Compare
+        scored_documents.sort();
+        let expected = scored_documents[0..top_k].to_vec();
+        let observed = top.into_sorted_vec();
+
+        vec_compare(&observed, &expected);
+
+    }
+
     #[rstest]
-    fn test_search(#[values(true, false)] in_memory: bool) {
-        let top_k = 1000;
-        let mut data = TestIndex::new(100, 1000, 50., 50);
+    #[case(true, 100, 1000, 50., 50, 10)]
+    #[case(true, 100, 1000, 50., 50, 1)]
+    fn test_search(#[case] in_memory: bool,
+        #[case] vocabulary_size: usize, 
+        #[case] document_count: i64, 
+        #[case] lambda_words: f32,
+        #[case] max_words: usize,
+        #[case] top_k: usize
+    ) {
+        let mut data = TestIndex::new(vocabulary_size, document_count, lambda_words, max_words);
         let mut index = if in_memory {
             data.indexer.to_forward_index()
         } else {
