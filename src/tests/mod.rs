@@ -4,7 +4,7 @@ mod tests {
     use std::{env, collections::{HashMap}, fmt::Display};
 
     // Note this useful idiom: importing names from outer (for mod tests) scope.
-    use crate::{index::sparse::{TermImpact, builder::{Indexer, ForwardIndexTrait}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
+    use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
     use ndarray::{array, Array};
     use ntest::{timeout, assert_true};
     use rand::thread_rng;

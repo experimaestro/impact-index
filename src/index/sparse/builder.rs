@@ -141,12 +141,13 @@ impl TermsImpacts {
 /// The indexer
 pub struct Indexer {
     impacts: TermsImpacts,
+    folder: PathBuf,
     built: bool
 }
 
 impl Indexer {
     pub fn new(folder: &Path) -> Indexer {
-        Indexer { impacts: TermsImpacts::new(folder), built: false }
+        Indexer { impacts: TermsImpacts::new(folder), folder: folder.to_path_buf(), built: false }
     }
 
     pub fn add<S, T>(&mut self, docid: DocId, terms: &ArrayBase<S, Ix1>, values: &ArrayBase<T, Ix1>) -> Result<(), std::io::Error> 
@@ -166,6 +167,15 @@ impl Indexer {
             // Flush the last impacts
             self.impacts.flush_all()?;
             self.built = true;
+
+            let info_path = self.folder.join(format!("information.cbor"));
+            let info_file = File::options()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(true).open(info_path).expect("Error while creating file");
+            ciborium::ser::into_writer(&self.impacts.information, info_file);
+
         } else {
             println!("Already built")
         }
@@ -176,7 +186,7 @@ impl Indexer {
     /**
      * Get a forward index
      */
-    pub fn to_forward_index(&mut self) -> ForwardIndex {
+    pub fn to_forward_index(&mut self) -> SparseBuilderIndex {
         assert!(self.built, "Index is not built");
         assert!(self.impacts.information.terms.len() > 0, "Index has already been consumed into a forward index");
         
@@ -189,7 +199,7 @@ impl Indexer {
         let mut terms = Vec::new();
         std::mem::swap(&mut self.impacts.information.terms, &mut terms);
 
-        ForwardIndex{
+        SparseBuilderIndex{
             terms: terms, 
             folder: folder,
             file: file
@@ -197,34 +207,53 @@ impl Indexer {
     }
 }
 
-impl<'a> ForwardIndexTrait<'a> for ForwardIndex {
+impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
     fn term_count(&self) -> usize {
         self.terms.len()
     }
 
     fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a> {
-        Box::new(ForwardIndexIterator::new(self, term_ix))
+        Box::new(SparseBuilderIndexIterator::new(self, term_ix))
     }
 }
 
 
 /// The forward index is the raw structure built while
 /// constructing the index
-pub struct ForwardIndex {
+pub struct SparseBuilderIndex {
     terms: Vec<TermIndexInformation>,
     folder: PathBuf,
     /// postings.dat
     file: File,
 }
 
+pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
+    let info_path = path.join(format!("information.cbor"));
+    let info_file = File::options()
+        .read(true).open(info_path).expect("Error while creating file");
+
+    let ti : IndexInformation = ciborium::de::from_reader(info_file).expect("Error loading term index information");
+
+    let postings_path = path.join(format!("postings.dat"));
+    let file = File::options()
+        .read(true)
+        .open(postings_path).expect("Error while creating file");
+
+    SparseBuilderIndex {
+        terms: ti.terms,
+        folder: path.to_path_buf(),
+        file
+    }
+}
+
 
 /// Forward Index trait
-pub trait ForwardIndexTrait<'a> {
+pub trait SparseBuilderIndexTrait<'a> {
     fn term_count(&self) -> usize;
     fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a>;
 }
 
-pub struct ForwardIndexIterator<'a> {
+pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     file: &'a File,
     impacts: Vec<TermImpact>,
@@ -232,8 +261,8 @@ pub struct ForwardIndexIterator<'a> {
     term_ix: TermIndex
 }
 
-impl<'a> ForwardIndexIterator<'a> {
-    fn new<'b: 'a>(index: &'b ForwardIndex, term_ix: TermIndex) -> Self {
+impl<'a> SparseBuilderIndexIterator<'a> {
+    fn new<'b: 'a>(index: &'b SparseBuilderIndex, term_ix: TermIndex) -> Self {
         let v = Vec::<TermImpact>::new();
         let iter = 
             if term_ix < index.terms.len() { 
@@ -252,7 +281,7 @@ impl<'a> ForwardIndexIterator<'a> {
     }
 }
 
-impl<'a> Iterator for ForwardIndexIterator<'a> {
+impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
     type Item = TermImpact;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -287,24 +316,24 @@ impl<'a> Iterator for ForwardIndexIterator<'a> {
 // --- Wand 
 
 
-struct WandForwardIndexIterator<'a> {
-    iterator: ForwardIndexIterator<'a>,
+struct WandSparseBuilderIndexIterator<'a> {
+    iterator: SparseBuilderIndexIterator<'a>,
     current_value: TermImpact,
     max_value: f64
 }
 
-impl<'a> WandForwardIndexIterator<'a> {
-    fn new(index: &'a ForwardIndex, term_ix: TermIndex) -> Self {
+impl<'a> WandSparseBuilderIndexIterator<'a> {
+    fn new(index: &'a SparseBuilderIndex, term_ix: TermIndex) -> Self {
         let max_value = index.terms[term_ix].max_value;
         Self {
-            iterator: ForwardIndexIterator::new(index, term_ix),
+            iterator: SparseBuilderIndexIterator::new(index, term_ix),
             current_value: TermImpact { docid: 0, value: 0. },
             max_value: max_value
         }
     }
 }
 
-impl<'a> WandIterator for WandForwardIndexIterator<'a> {
+impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
     fn next(&mut self, doc_id: DocId) -> bool {
         while let Some(v) = self.iterator.next() {
             if v.docid >= doc_id {
@@ -326,8 +355,8 @@ impl<'a> WandIterator for WandForwardIndexIterator<'a> {
     }
 }
 
-impl WandIndex for ForwardIndex {
+impl WandIndex for SparseBuilderIndex {
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn WandIterator + 'a> {
-        Box::new(WandForwardIndexIterator::new(self, term_ix))
+        Box::new(WandSparseBuilderIndexIterator::new(self, term_ix))
     }
 }

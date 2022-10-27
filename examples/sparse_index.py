@@ -25,3 +25,7 @@ with tempfile.TemporaryDirectory() as dir:
     #         print(i, t.docid, t.value)
 
     print([(d.docid, d.score) for d in index.search({1: .2, 5: .5}, 10)])
+
+    print("Load index from disk")
+    index = xpmir_rust.index.SparseBuilderIndex.load(dir)
+    print([(d.docid, d.score) for d in index.search({1: .2, 5: .5}, 10)])

@@ -3,17 +3,18 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Mutex, Arc};
 
-use pyo3::{Python, IntoPy};
+use pyo3::types::PyModule;
+use pyo3::{Python, IntoPy, pymodule};
 use pyo3::{pyclass, pymethods, PyResult, PyRef, types::PyDict, PyObject};
 
 use crate::base::{ImpactValue, DocId, TermIndex};
-use crate::index::sparse::builder::{ForwardIndexTrait, ForwardIndex};
-use crate::index::sparse::{builder::Indexer as _SparseIndexer, TermImpactIterator, wand::search_wand};
+use crate::index::sparse::builder::{SparseBuilderIndexTrait, SparseBuilderIndex, load_forward_index};
+use crate::index::sparse::{builder::Indexer as SparseIndexer, TermImpactIterator, wand::search_wand};
 
 use numpy::{PyArray1};
 
 // #[pymethods] 
-// impl ForwardIndexIterator {
+// impl SparseBuilderIndexIterator {
 //     fn __next__(mut slf: PyRefMut<Self>) -> IterNextOutput<usize, &'static str> {
 //         match self.next() {
 //             Some(value) => IterNextOutput::Yield(value),
@@ -41,13 +42,13 @@ pub struct PyScoredDocument {
 }
 
 #[pyclass]
-struct SparseForwardIndexIterator {
-    index: Arc<Mutex<ForwardIndex>>,
+struct SparseSparseBuilderIndexIterator {
+    index: Arc<Mutex<SparseBuilderIndex>>,
     iter: TermImpactIterator<'static>
 }
 
 #[pymethods]
-impl SparseForwardIndexIterator {
+impl SparseSparseBuilderIndexIterator {
     fn __next__(&mut self) -> PyResult<Option<PyTermImpact>> {
         if let Some(r) = self.iter.next() {
             return Ok(Some(PyTermImpact { value: r.value, docid: r.docid }))
@@ -60,16 +61,16 @@ impl SparseForwardIndexIterator {
     }
 }
 
-#[pyclass(name="ForwardIndex")]
-pub struct PyForwardIndex {
-    index: Arc<Mutex<ForwardIndex>>,
+#[pyclass(name="SparseBuilderIndex")]
+pub struct PySparseBuilderIndex {
+    index: Arc<Mutex<SparseBuilderIndex>>,
 }
 
 #[pymethods]
-impl PyForwardIndex {
-    fn iter(&self, term: TermIndex) -> PyResult<SparseForwardIndexIterator> {
+impl PySparseBuilderIndex {
+    fn iter(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
         let index = self.index.lock().unwrap();
-        Ok(SparseForwardIndexIterator {
+        Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
             // TODO: ugly but works since index is there
             iter: unsafe { extend_lifetime(index.iter(term)) }
@@ -92,12 +93,19 @@ impl PyForwardIndex {
 
         Ok(list)
     }
+
+    #[staticmethod]
+    fn load(folder: &str) -> PyResult<Self> {
+        Ok(PySparseBuilderIndex {
+            index: Arc::new(Mutex::new(load_forward_index(Path::new(folder))))
+        })
+    }
 }
 
 
-#[pyclass]
-pub struct SparseIndexer {
-    indexer: Arc<Mutex<_SparseIndexer>>,
+#[pyclass(name="SparseIndexer")]
+pub struct PySparseIndexer {
+    indexer: Arc<Mutex<SparseIndexer>>,
 }
 
 unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'static> {
@@ -106,10 +114,10 @@ unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'
 
 #[pymethods] 
 /// Each document is a sparse vector
-impl SparseIndexer {
+impl PySparseIndexer {
     #[new]
     fn new(folder: &str) -> Self {
-        SparseIndexer { indexer: Arc::new(Mutex::new(_SparseIndexer::new(Path::new(folder)))) }
+        PySparseIndexer { indexer: Arc::new(Mutex::new(SparseIndexer::new(Path::new(folder)))) }
     }
     
     /// Adds a new document to the index
@@ -121,10 +129,10 @@ impl SparseIndexer {
         Ok(())
     }
 
-    fn build(&mut self) -> PyResult<PyForwardIndex> {
+    fn build(&mut self) -> PyResult<PySparseBuilderIndex> {
         let mut indexer  = self.indexer.lock().unwrap();        
         indexer.build().expect("Error while building index");
         let index = indexer.to_forward_index();
-        Ok(PyForwardIndex { index: Arc::new(Mutex::new(index)) })
+        Ok(PySparseBuilderIndex { index: Arc::new(Mutex::new(index)) })
     }
 }
