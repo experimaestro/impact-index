@@ -307,14 +307,13 @@ impl<'a> WandForwardIndexIterator<'a> {
 impl<'a> WandIterator for WandForwardIndexIterator<'a> {
     fn next(&mut self, doc_id: DocId) -> bool {
         while let Some(v) = self.iterator.next() {
-            println!("[{}] Got doc {} with value {} (min {})", self.iterator.term_ix, v.docid, v.value, doc_id);
             if v.docid >= doc_id {
                 self.current_value = v;
                 return true
             }
         }
         
-        println!("[{}] This is over", self.iterator.term_ix);
+        // println!("[{}] This is over", self.iterator.term_ix);
         return false
     }
 

@@ -1,16 +1,23 @@
 
 #[cfg(test)]
 mod tests {
-    use std::{env, collections::{HashMap}};
+    use std::{env, collections::{HashMap}, fmt::Display};
 
     // Note this useful idiom: importing names from outer (for mod tests) scope.
     use crate::{index::sparse::{TermImpact, builder::{Indexer, ForwardIndexTrait}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
     use ndarray::{array, Array};
-    use ntest::timeout;
+    use ntest::{timeout, assert_true};
     use rand::thread_rng;
     use rand_distr::{Poisson, Distribution, LogNormal};
     use temp_dir::TempDir;
     use std::cmp::min;
+
+    fn vec_compare<T>(observed: &Vec<T>, expected: &Vec<T>) where T: PartialEq + Display {
+        assert!(observed.len() == expected.len(), "Size differ {} vs {}", observed.len(), expected.len());
+        for i in 0..expected.len() {
+            assert!(observed[i] == expected[i], "{}th element differ: {} vs {}", i, observed[i], expected[i]);
+        }
+    }
 
     struct TermWeight {
         term_ix: TermIndex,
@@ -127,20 +134,11 @@ mod tests {
             }
 
         }
-
-        // // let index = indexer.to_forward_index();
-
-        // let query = HashMap::<usize, f64>::from([
-        //     (1, 0.4),
-        //     (2, 0.2)
-        // ]);
-        // search_wand(&indexer, &query, 10);
-
     }
 
     #[test]
     fn test_search() {
-        let mut data = TestIndex::new(100, 1000, 5., 10);
+        let mut data = TestIndex::new(200, 10000, 10., 50);
         let mut index = data.indexer.to_forward_index();
 
         // let index = data.indexer.to_forward_index();
@@ -148,14 +146,14 @@ mod tests {
             (1, 0.4),
             (2, 0.2)
         ]);
-        let results = search_wand(&mut index, &query, 10);
+        let observed = search_wand(&mut index, &query, 10);
         eprintln!("Results are");
-        for result in results.iter() {
+        for result in observed.iter() {
             eprintln!("document {}, score {}", result.docid, result.score);
         }
 
         // Searching by iterating
-        let mut results = TopScoredDocuments::new(10);
+        let mut top = TopScoredDocuments::new(10);
         for (doc_id, document) in data.documents.iter().enumerate() {
             let mut score = 0.;
             for tw in document.terms.iter() {
@@ -164,12 +162,15 @@ mod tests {
                     None => 0.
                 } * (tw.weight as f64)
             }
-            results.add(doc_id.try_into().unwrap(), score);
+            top.add(doc_id.try_into().unwrap(), score);
         }
         eprintln!("Results are");
-        for result in results.into_sorted_vec().iter() {
+        let expected = top.into_sorted_vec();
+        for result in expected.iter() {
             eprintln!("document {}, score {}", result.docid, result.score);
         }
+
+        vec_compare(&expected, &observed);
 
     }
 }

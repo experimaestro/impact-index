@@ -7,6 +7,12 @@ pub struct ScoredDocument {
     pub score: f64
 }
 
+impl std::fmt::Display for ScoredDocument {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "({},{})", self.docid, self.score)
+    }
+}
+
 impl PartialEq for ScoredDocument {
     fn eq(&self, other: &Self) -> bool {
         self.score == other.score
@@ -51,13 +57,14 @@ impl TopScoredDocuments {
         Self { heap: BinaryHeap::new(), top_k: top_k }
     }
 
-    pub fn add(&mut self, candidate: DocId, score: f64) {
+    pub fn add(&mut self, candidate: DocId, score: f64) -> f64 {
         if self.heap.len() < self.top_k {
             self.heap.push(ScoredDocument { docid: candidate, score: score });
         } else if self.heap.peek().expect("should not happen").score < score {
             self.heap.pop();
             self.heap.push(ScoredDocument { docid: candidate, score: score });
         }
+        self.heap.peek().unwrap().score
     }
 
     pub fn into_sorted_vec(mut self) -> Vec<ScoredDocument> {

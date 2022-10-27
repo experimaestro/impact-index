@@ -24,4 +24,4 @@ with tempfile.TemporaryDirectory() as dir:
     #     for t in indexer.iter(i):
     #         print(i, t.docid, t.value)
 
-    index.search({1: .2, 5: .5}, 10)
+    print([(d.docid, d.score) for d in index.search({1: .2, 5: .5}, 10)])

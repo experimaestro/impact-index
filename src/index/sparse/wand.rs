@@ -42,6 +42,11 @@ struct WandIteratorWrapper<'a> {
     query_weight: f64
 }
 
+impl std::fmt::Display for WandIteratorWrapper<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "({}; max={})", self.iterator.current(), self.iterator.max() * self.query_weight)
+    }
+}
 
 struct WandSearch<'a> {
     cur_doc: Option<DocId>,
@@ -71,11 +76,12 @@ impl<'a> WandSearch<'a> {
     }
 
     fn find_pivot_term(&mut self, theta: f64) -> Option<usize> {
+        // Sort iterators by increasing document ID
         self.iterators.sort_by(|a, b| a.iterator.current().docid.cmp(&b.iterator.current().docid));
-
+        
+        // Accumulate until we get a value greater than theta
         let mut upper_bound = 0.;
         for (ix, iterator) in self.iterators.iter().enumerate() {
-            // let &ti  = iterator.current();
             upper_bound += iterator.iterator.max() * iterator.query_weight;
             if upper_bound > theta {
                 return Some(ix);
@@ -90,21 +96,19 @@ impl<'a> WandSearch<'a> {
     }
 
     fn next(&mut self, theta: f64) -> Option<DocId> {
-        println!("Searching with theta {}", theta);
-
         loop {
             if let Some(ix) = self.find_pivot_term(theta) {
-                eprintln!("Find some pivot term: {}", ix);
+                // Pivot term has been found
                 let pivot = self.iterators[ix].iterator.current().docid;
                 
                 if match self.cur_doc {
                     Some(cur) => pivot <= cur,
                     None => false
                 } {
+                    // Pivot has already been considered, advance one iterator
                     let term_ix = self.pick_term(ix);
                     if !self.iterators[term_ix].iterator.next(pivot) {
                         // Remove this iterator
-                        eprintln!("Removing iterator {}", ix);
                         self.iterators.remove(ix);
                     }
                 } else if self.iterators[0].iterator.current().docid == pivot {
@@ -139,8 +143,6 @@ pub fn search_wand<'a>(index: &'a mut dyn WandIndex, query: &HashMap<TermIndex, 
 
     // Loop until there are no more candidates
     while let Some(candidate) = search.next(theta) {
-        println!("Got a new candidate {}", candidate);
-
         // Compute the score of the candidate
         let mut score: f64 = 0.;
         for x in search.iterators.iter() {
@@ -152,9 +154,9 @@ pub fn search_wand<'a>(index: &'a mut dyn WandIndex, query: &HashMap<TermIndex, 
         }
 
         // Update the heap
-        results.add(candidate, score);
-        theta = f64::max(score, theta);
+        theta = results.add(candidate, score);
+        
     }
-    eprintln!("Finished searching");
+
     results.into_sorted_vec()
 }
