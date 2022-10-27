@@ -5,6 +5,7 @@ mod tests {
     use rstest::rstest;
 
     use std::{env, collections::{HashMap}, fmt::Display};
+    use std::iter::FromIterator;
 
     trait ApproxEq {
         fn approx_eq(&self, other: &Self, delta: f64) -> bool;
@@ -152,7 +153,7 @@ mod tests {
     #[rstest]
     fn test_search(#[values(true, false)] in_memory: bool) {
         let top_k = 1000;
-        let mut data = TestIndex::new(100, 1000, 10., 50);
+        let mut data = TestIndex::new(100, 1000, 50., 50);
         let mut index = if in_memory {
             data.indexer.to_forward_index()
         } else {
@@ -160,14 +161,10 @@ mod tests {
         };
             
 
-        // let index = data.indexer.to_forward_index();
-        let query = HashMap::<usize, f64>::from([
-            (0, 0.4),
-            (1, 0.231),
-            (4, 0.2),
-            (5, 1.2),
-            (23, 0.8)
-        ]);
+        // Builds a query from a document
+        let query: HashMap::<usize, f64> = data.documents[10].terms.iter().map(|x| (x.term_ix, x.weight as f64)).collect();
+
+        // Search with WAND
         let observed = search_wand(&mut index, &query, top_k);
         eprintln!("Results are");
         for result in observed.iter() {

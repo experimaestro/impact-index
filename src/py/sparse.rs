@@ -68,7 +68,7 @@ pub struct PySparseBuilderIndex {
 
 #[pymethods]
 impl PySparseBuilderIndex {
-    fn iter(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
+    fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
         let index = self.index.lock().unwrap();
         Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
@@ -81,6 +81,8 @@ impl PySparseBuilderIndex {
         let mut index  = self.index.lock().unwrap();        
 
         let query: HashMap<usize, f64> = py_query.extract()?;
+        // let qs: Vec<String> = query.iter().map(|x| format!("{}: {}", x.0, x.1)).collect();
+        // eprintln!("Query from Python = {}", qs.join(", "));
         let results = search_wand(index.deref_mut(), &query, top_k);
 
         let list = Python::with_gil(|py| {

@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory() as dir:
     for doc_id in range(NUM_DOCS):
         num_terms = np.random.randint(10, 50)
         terms = np.random.choice(range(NUM_TERMS), num_terms).astype(np.uint64)
-        impacts = np.random.randn((num_terms)).astype(np.float32)
+        impacts = np.abs(np.random.randn(num_terms)).astype(np.float32)
         indexer.add(doc_id, terms, impacts)
 
 
@@ -23,9 +23,10 @@ with tempfile.TemporaryDirectory() as dir:
     # for i in range(max(50, NUM_TERMS)):
     #     for t in indexer.iter(i):
     #         print(i, t.docid, t.value)
+    q = {1: .2, 5: .52, 12: .1}
 
-    print([(d.docid, d.score) for d in index.search({1: .2, 5: .5}, 10)])
+    print([(d.docid, d.score) for d in index.search(q, 10)])
 
     print("Load index from disk")
     index = xpmir_rust.index.SparseBuilderIndex.load(dir)
-    print([(d.docid, d.score) for d in index.search({1: .2, 5: .5}, 10)])
+    print([(d.docid, d.score) for d in index.search(q, 10)])
