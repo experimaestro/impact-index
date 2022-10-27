@@ -1,10 +1,13 @@
 
+
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use std::{env, collections::{HashMap}, fmt::Display};
 
     // Note this useful idiom: importing names from outer (for mod tests) scope.
-    use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
+    use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait, load_forward_index}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
     use ndarray::{array, Array};
     use ntest::{timeout, assert_true};
     use rand::thread_rng;
@@ -136,10 +139,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_search() {
+    #[rstest]
+    fn test_search(#[values(true, false)] in_memory: bool) {
         let mut data = TestIndex::new(200, 10000, 10., 50);
-        let mut index = data.indexer.to_forward_index();
+        let mut index = if in_memory {
+            data.indexer.to_forward_index()
+        } else {
+            load_forward_index(data.dir.path())
+        };
+            
 
         // let index = data.indexer.to_forward_index();
         let query = HashMap::<usize, f64>::from([
