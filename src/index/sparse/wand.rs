@@ -1,4 +1,4 @@
-use std::{collections::{HashMap}};
+use std::{collections::{HashMap}, f32::NEG_INFINITY};
 
 use crate::{search::{ScoredDocument, TopScoredDocuments}, base::DocId};
 
@@ -154,7 +154,7 @@ pub fn search_wand<'a>(index: &'a mut dyn WandIndex, query: &HashMap<TermIndex, 
         }
 
         // Update the heap
-        theta = results.add(candidate, score);
+        theta = results.add(candidate, score).max(0.);
         
     }
 

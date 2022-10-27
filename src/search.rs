@@ -65,6 +65,8 @@ impl TopScoredDocuments {
             self.heap.pop();
             self.heap.push(ScoredDocument { docid: candidate, score: score });
         }
+
+        // Returns the minimum score
         if self.heap.len() >= self.top_k {
             self.heap.peek().unwrap().score
         } else {

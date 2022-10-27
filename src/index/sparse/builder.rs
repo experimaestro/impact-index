@@ -69,6 +69,8 @@ impl TermsImpacts {
 
     /// Adds a term for a given document
     fn add_impact(&mut self, term_ix: TermIndex, docid: DocId, value: ImpactValue) -> Result<(), std::io::Error> {
+        assert!(value > 0., "Impact values should be greater than 0");
+
         // Adds new vectors for missing words
         if term_ix >= self.postings.len() {
             let d = term_ix - self.postings.len() + 1;
@@ -174,7 +176,8 @@ impl Indexer {
                 .write(true)
                 .create(true)
                 .truncate(true).open(info_path).expect("Error while creating file");
-            ciborium::ser::into_writer(&self.impacts.information, info_file);
+            
+            ciborium::ser::into_writer(&self.impacts.information, info_file).expect("Error while serializing");
 
         } else {
             println!("Already built")

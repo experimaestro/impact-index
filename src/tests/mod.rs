@@ -6,8 +6,18 @@ mod tests {
 
     use std::{env, collections::{HashMap}, fmt::Display};
 
+    trait ApproxEq {
+        fn approx_eq(&self, other: &Self, delta: f64) -> bool;
+    }
+
+    impl ApproxEq for ScoredDocument {
+        fn approx_eq(&self, other: &Self, delta: f64) -> bool {
+            (self.docid == other.docid) && ((self.score - other.score).abs() < delta)
+        }
+    }
+
     // Note this useful idiom: importing names from outer (for mod tests) scope.
-    use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait, load_forward_index}, wand::search_wand}, search::{TopScoredDocuments}, base::{TermIndex, ImpactValue}};
+    use crate::{index::sparse::{TermImpact, builder::{Indexer, SparseBuilderIndexTrait, load_forward_index}, wand::search_wand}, search::{TopScoredDocuments, ScoredDocument}, base::{TermIndex, ImpactValue}};
     use ndarray::{array, Array};
     use ntest::{timeout, assert_true};
     use rand::thread_rng;
@@ -15,10 +25,10 @@ mod tests {
     use temp_dir::TempDir;
     use std::cmp::min;
 
-    fn vec_compare<T>(observed: &Vec<T>, expected: &Vec<T>) where T: PartialEq + Display {
+    fn vec_compare<T>(observed: &Vec<T>, expected: &Vec<T>) where T: ApproxEq + Display {
         assert!(observed.len() == expected.len(), "Size differ {} vs {}", observed.len(), expected.len());
         for i in 0..expected.len() {
-            assert!(observed[i] == expected[i], "{}th element differ: {} vs {}", i, observed[i], expected[i]);
+            assert!(observed[i].approx_eq(&expected[i], 1e-5), "{}th element differ: {} vs {}", i, observed[i], expected[i]);
         }
     }
 
@@ -141,7 +151,8 @@ mod tests {
 
     #[rstest]
     fn test_search(#[values(true, false)] in_memory: bool) {
-        let mut data = TestIndex::new(200, 10000, 10., 50);
+        let top_k = 1000;
+        let mut data = TestIndex::new(100, 1000, 10., 50);
         let mut index = if in_memory {
             data.indexer.to_forward_index()
         } else {
@@ -151,17 +162,20 @@ mod tests {
 
         // let index = data.indexer.to_forward_index();
         let query = HashMap::<usize, f64>::from([
-            (1, 0.4),
-            (2, 0.2)
+            (0, 0.4),
+            (1, 0.231),
+            (4, 0.2),
+            (5, 1.2),
+            (23, 0.8)
         ]);
-        let observed = search_wand(&mut index, &query, 10);
+        let observed = search_wand(&mut index, &query, top_k);
         eprintln!("Results are");
         for result in observed.iter() {
             eprintln!("document {}, score {}", result.docid, result.score);
         }
 
         // Searching by iterating
-        let mut top = TopScoredDocuments::new(10);
+        let mut top = TopScoredDocuments::new(top_k);
         for (doc_id, document) in data.documents.iter().enumerate() {
             let mut score = 0.;
             for tw in document.terms.iter() {
@@ -170,7 +184,9 @@ mod tests {
                     None => 0.
                 } * (tw.weight as f64)
             }
-            top.add(doc_id.try_into().unwrap(), score);
+            if score > 0. {
+                top.add(doc_id.try_into().unwrap(), score);
+            }
         }
         eprintln!("Results are");
         let expected = top.into_sorted_vec();
@@ -178,7 +194,7 @@ mod tests {
             eprintln!("document {}, score {}", result.docid, result.score);
         }
 
-        vec_compare(&expected, &observed);
+        vec_compare(&observed, &expected);
 
     }
 }
