@@ -3,8 +3,7 @@ use std::ops::DerefMut;
 use std::path::Path;
 use std::sync::{Mutex, Arc};
 
-use pyo3::types::PyModule;
-use pyo3::{Python, IntoPy, pymodule};
+use pyo3::{Python, IntoPy};
 use pyo3::{pyclass, pymethods, PyResult, PyRef, types::PyDict, PyObject};
 
 use crate::base::{ImpactValue, DocId, TermIndex};
@@ -35,7 +34,7 @@ struct PyTermImpact {
 #[pyclass]
 pub struct PyScoredDocument {
     #[pyo3(get)]
-    score: f64,
+    score: ImpactValue,
 
     #[pyo3(get)]
     docid: DocId
@@ -43,6 +42,7 @@ pub struct PyScoredDocument {
 
 #[pyclass]
 struct SparseSparseBuilderIndexIterator {
+    #[allow(dead_code)]
     index: Arc<Mutex<SparseBuilderIndex>>,
     iter: TermImpactIterator<'static>
 }
@@ -80,7 +80,7 @@ impl PySparseBuilderIndex {
     fn search(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
         let mut index  = self.index.lock().unwrap();        
 
-        let query: HashMap<usize, f64> = py_query.extract()?;
+        let query: HashMap<usize, ImpactValue> = py_query.extract()?;
         let results = search_wand(index.deref_mut(), &query, top_k);
 
         let list = Python::with_gil(|py| {

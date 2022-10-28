@@ -5,6 +5,8 @@ use crate::base::{DocId, ImpactValue};
 
 pub mod wand;
 pub mod builder; 
+pub mod compress;
+pub mod sharding;
 
 /// Term impact = document ID + impact value
 #[derive(Serialize, Deserialize, Clone, Copy)]

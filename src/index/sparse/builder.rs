@@ -1,4 +1,4 @@
-use std::{path::{PathBuf, Path}, fs::File, io::{Seek, Write}, cell::Cell};
+use std::{path::{PathBuf, Path}, fs::File, io::{Seek, Write}};
 
 use log::debug;
 use ndarray::{ArrayBase, Ix1, Data};
@@ -10,7 +10,7 @@ use super::{TermImpact, TermImpactIterator, wand::{WandIterator, WandIndex}};
 
 
 #[derive(Serialize, Deserialize)]
-struct TermIndexPageInformation {
+struct TermIndexPageInformation { 
     position: u64,
     length: usize
 }
@@ -18,7 +18,9 @@ struct TermIndexPageInformation {
 #[derive(Serialize, Deserialize)]
 struct TermIndexInformation {
     pages: Vec<TermIndexPageInformation>,
-    max_value: f64
+    max_value: ImpactValue,
+    max_doc_id: DocId,
+    length: usize
 }
 
 /// Globla information on the index structure
@@ -79,7 +81,9 @@ impl TermsImpacts {
                 self.postings.push(Vec::new());
                 self.information.terms.push(TermIndexInformation { 
                     pages: Vec::new(),
-                    max_value: f64::NEG_INFINITY
+                    length: 0,
+                    max_value: ImpactValue::NEG_INFINITY,
+                    max_doc_id: 0
                  });
             };
         }
@@ -90,9 +94,17 @@ impl TermsImpacts {
             value: value
         });
 
-        if self.information.terms[term_ix].max_value < value as f64 {
-            self.information.terms[term_ix].max_value = value as f64
+        // Update the term information
+        let info = &mut self.information.terms[term_ix];
+        info.length += 1;
+
+        if info.max_value < value {
+            info.max_value = value
         }
+
+        assert!(info.max_doc_id < docid, "Doc ID should be increasing and this is not the case: {} vs {}",
+            info.max_doc_id, docid);
+        info.max_doc_id = docid;
 
 
         // Flush if needed
@@ -142,7 +154,8 @@ impl TermsImpacts {
 
 
 
-/// The indexer
+/// The indexer consumes documents and 
+/// build a temporary structure
 pub struct Indexer {
     impacts: TermsImpacts,
     folder: PathBuf,
@@ -206,7 +219,7 @@ impl Indexer {
 
         SparseBuilderIndex{
             terms: terms, 
-            folder: folder,
+            // folder: folder,
             file: file
         }
     }
@@ -227,7 +240,7 @@ impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
 /// constructing the index
 pub struct SparseBuilderIndex {
     terms: Vec<TermIndexInformation>,
-    folder: PathBuf,
+    // folder: PathBuf,
     /// postings.dat
     file: File,
 }
@@ -246,7 +259,7 @@ pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
 
     SparseBuilderIndex {
         terms: ti.terms,
-        folder: path.to_path_buf(),
+        // folder: path.to_path_buf(),
         file
     }
 }
@@ -324,22 +337,26 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 struct WandSparseBuilderIndexIterator<'a> {
     iterator: SparseBuilderIndexIterator<'a>,
     current_value: TermImpact,
-    max_value: f64
+    max_value: ImpactValue,
+    max_doc_id: DocId,
+    length: usize,
 }
 
 impl<'a> WandSparseBuilderIndexIterator<'a> {
     fn new(index: &'a SparseBuilderIndex, term_ix: TermIndex) -> Self {
-        let max_value = index.terms[term_ix].max_value;
+        let info = &index.terms[term_ix];
         Self {
             iterator: SparseBuilderIndexIterator::new(index, term_ix),
             current_value: TermImpact { docid: 0, value: 0. },
-            max_value: max_value
+            max_value: info.max_value,
+            max_doc_id: info.max_doc_id,
+            length: info.length
         }
     }
 }
 
 impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
-    fn next(&mut self, doc_id: DocId) -> bool {
+    fn next_min_doc_id(&mut self, doc_id: DocId) -> bool {
         while let Some(v) = self.iterator.next() {
             if v.docid >= doc_id {
                 debug!("[{}] Returning {} ({})", self.iterator.term_ix, v.docid, v.value);
@@ -349,7 +366,7 @@ impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
             debug!("[{}] Skipping {} ({}) / {}", self.iterator.term_ix, v.docid, v.value, doc_id);
         }
         
-        println!("[{}] This is over", self.iterator.term_ix);
+        debug!("[{}] WAND iterator closing", self.iterator.term_ix);
         return false
     }
 
@@ -357,13 +374,26 @@ impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
         return &self.current_value
     }
 
-    fn max(&self) -> f64 {
+    fn max_value(&self) -> ImpactValue {
         return self.max_value
     }
+
+    fn max_doc_id(&self) -> DocId {
+        return self.max_doc_id
+    }
+
+    fn length(&self) -> usize {
+        return self.length
+    }
+
 }
 
 impl WandIndex for SparseBuilderIndex {
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn WandIterator + 'a> {
         Box::new(WandSparseBuilderIndexIterator::new(self, term_ix))
+    }
+
+    fn length(&self) -> usize {
+        return self.term_count()
     }
 }

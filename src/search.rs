@@ -1,11 +1,18 @@
 use std::{collections::BinaryHeap, cmp::Ordering};
 
-use crate::base::DocId;
+use crate::base::{DocId, ImpactValue};
 
 pub struct ScoredDocument {
     pub docid: DocId,
-    pub score: f64
+    pub score: ImpactValue
 }
+
+impl Clone for ScoredDocument {
+    fn clone(&self) -> Self {
+        Self { docid: self.docid.clone(), score: self.score.clone() }
+    }
+}
+
 
 impl std::fmt::Display for ScoredDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -58,7 +65,7 @@ impl TopScoredDocuments {
     }
 
     /// Add a new candidate, and returns the new lower bound on scores
-    pub fn add(&mut self, candidate: DocId, score: f64) -> f64 {
+    pub fn add(&mut self, candidate: DocId, score: ImpactValue) -> ImpactValue {
         if self.heap.len() < self.top_k {
             self.heap.push(ScoredDocument { docid: candidate, score: score });
         } else if self.heap.peek().expect("should not happen").score < score {
@@ -71,11 +78,11 @@ impl TopScoredDocuments {
             self.heap.peek().unwrap().score
         } else {
             // If the heap is not full, returns -infinity
-            f64::NEG_INFINITY
+            ImpactValue::NEG_INFINITY
         }
     }
 
-    pub fn into_sorted_vec(mut self) -> Vec<ScoredDocument> {
+    pub fn into_sorted_vec(self) -> Vec<ScoredDocument> {
         self.heap.into_sorted_vec()
     }
 }
