@@ -23,7 +23,7 @@ impl ApproxEq for ScoredDocument {
 fn vec_compare<T>(observed: &Vec<T>, expected: &Vec<T>) where T: ApproxEq + Display {
     assert!(observed.len() == expected.len(), "Size differ {} vs {}", observed.len(), expected.len());
     for i in 0..expected.len() {
-        assert!(observed[i].approx_eq(&expected[i], 1e-5), "{}th element differ: {} vs {}", i, observed[i], expected[i]);
+        assert!(observed[i].approx_eq(&expected[i], 1e-2), "{}th element differ: {} vs {}", i, observed[i], expected[i]);
     }
 }
 

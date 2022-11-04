@@ -16,6 +16,38 @@ pub trait CompressorFactory<T> {
     fn init<'a>(&self, value_writer: &'a mut dyn Write, it: &dyn WandIterator) -> Box<dyn Compressor<T> + 'a>;
 }
 
+
+/// Compress the impact values
+pub fn compress(
+    path: &Path,
+    index: &dyn WandIndex, 
+    doc_compressor_factory: &dyn CompressorFactory<DocId>,
+    value_compressor_factory: &dyn CompressorFactory<ImpactValue>, 
+) -> Result<(), std::io::Error> {
+
+    let mut value_writer = File::options().write(true).truncate(true).create(true).open(path.join("value.dat")).expect("Could not create the data file");
+    let mut docid_writer = File::options().write(true).truncate(true).create(true).open(path.join("docid.dat")).expect("Could not create the data file");
+
+    for term_ix in 0..index.length() {
+        let mut it = index.iterator(term_ix);
+        {
+            let mut doc_compressor = doc_compressor_factory.init(&mut value_writer, it.as_ref());
+            let mut value_compressor = value_compressor_factory.init(&mut docid_writer, it.as_ref());
+            
+            while let Some(ti) = it.next() {
+                doc_compressor.add(&ti.docid);
+                value_compressor.add(&ti.value);
+            }
+        }
+        value_writer.stream_position()?;
+        docid_writer.stream_position()?;
+    }
+
+    Ok(())
+}
+
+// --- Elias Fano
+
 struct EliasFanoCompressor<'a> {
     builder: EliasFanoBuilder,
     writer: &'a mut dyn Write
@@ -42,32 +74,4 @@ impl CompressorFactory<DocId> for EliasFanoCompressorFactory {
             writer: writer
         })
     }
-}
-
-/// Compress the impact values
-pub fn compress(index: &dyn WandIndex, 
-    doc_compressor_factory: &dyn CompressorFactory<DocId>,
-    value_compressor_factory: &dyn CompressorFactory<ImpactValue>, 
-) -> Result<(), std::io::Error> {
-
-    let path = Path::new("/tmp/yaya");
-    let mut value_writer = File::options().write(true).truncate(true).create(true).open(path).expect("Could not create the data file");
-    let mut docid_writer = File::options().write(true).truncate(true).create(true).open(path).expect("Could not create the data file");
-
-
-    for term_ix in 0..index.length() {
-        let mut it = index.iterator(term_ix);
-        {
-            let mut doc_compressor = doc_compressor_factory.init(&mut value_writer, it.as_ref());
-            let mut value_compressor = value_compressor_factory.init(&mut docid_writer, it.as_ref());
-            
-            while let Some(ti) = it.next() {
-                doc_compressor.add(&ti.docid);
-                value_compressor.add(&ti.value);
-            }
-        }
-        value_writer.stream_position()?;
-    }
-
-    Ok(())
 }

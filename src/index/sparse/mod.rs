@@ -3,6 +3,7 @@ use std::fmt;
 use serde::{Serialize, Deserialize};
 use crate::base::{DocId, ImpactValue};
 
+pub mod index;
 pub mod wand;
 pub mod builder; 
 pub mod compress;

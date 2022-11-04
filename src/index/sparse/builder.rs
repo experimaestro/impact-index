@@ -2,53 +2,41 @@ use std::{path::{PathBuf, Path}, fs::File, io::{Seek, Write}};
 
 use log::debug;
 use ndarray::{ArrayBase, Ix1, Data};
-use serde::{Serialize, Deserialize};
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::base::{TermIndex, DocId, ImpactValue, BoxResult};
-use super::{TermImpact, TermImpactIterator, wand::{WandIterator, WandIndex}};
-
-
-#[derive(Serialize, Deserialize)]
-struct TermIndexPageInformation { 
-    position: u64,
-    length: usize
-}
-
-#[derive(Serialize, Deserialize)]
-struct TermIndexInformation {
-    pages: Vec<TermIndexPageInformation>,
-    max_value: ImpactValue,
-    max_doc_id: DocId,
-    length: usize
-}
-
-/// Globla information on the index structure
-#[derive(Serialize, Deserialize)]
-struct IndexInformation {
-    terms: Vec<TermIndexInformation>
-}
-
-
-impl IndexInformation {
-    pub fn new() -> IndexInformation{
-        IndexInformation {
-            terms: Vec::new()
-        }
-    }
-}
+use crate::{base::{TermIndex, DocId, ImpactValue, BoxResult}, index::sparse::index::TermIndexInformation};
+use super::{TermImpact, TermImpactIterator, wand::{WandIterator, WandIndex}, index::{IndexInformation, TermIndexPageInformation}};
 
 
 /*
 * ---- First phase data structure
 *
 */
+
+struct PostingsInformation {
+    postings: Vec<TermImpact>,
+    information: TermIndexPageInformation
+}
+impl PostingsInformation {
+    fn new() -> Self {
+        Self {
+            postings: Vec::new(),
+            information: TermIndexPageInformation::new()
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.postings.len()
+    }
+}
+
 struct TermsImpacts {
     in_memory_threshold: usize,
     folder: PathBuf,
     postings_file: std::fs::File,
     information: IndexInformation,
-    postings: Vec<Vec<TermImpact>>
+    postings_information: Vec<PostingsInformation>
 }
 
 impl TermsImpacts {
@@ -65,7 +53,7 @@ impl TermsImpacts {
                 .write(true)
                 .create(true)
                 .truncate(true).open(path).expect("Error while creating file"),
-            postings: Vec::new(),
+            postings_information: Vec::new(),
             information: IndexInformation::new()
         }
     }
@@ -75,10 +63,10 @@ impl TermsImpacts {
         assert!(value > 0., "Impact values should be greater than 0");
 
         // Adds new vectors for missing words
-        if term_ix >= self.postings.len() {
-            let d = term_ix - self.postings.len() + 1;
+        if term_ix >= self.postings_information.len() {
+            let d = term_ix - self.postings_information.len() + 1;
             for _i in 1..=d {
-                self.postings.push(Vec::new());
+                self.postings_information.push(PostingsInformation::new());
                 self.information.terms.push(TermIndexInformation { 
                     pages: Vec::new(),
                     length: 0,
@@ -88,11 +76,18 @@ impl TermsImpacts {
             };
         }
 
-        // Add the posting
-        self.postings[term_ix].push(TermImpact {
+        // Update the postings information
+        let p_info = &mut self.postings_information[term_ix];
+        
+        p_info.postings.push(TermImpact {
             docid: docid,
             value: value
         });
+        if p_info.information.max_value < value {
+            p_info.information.max_value = value;
+        }
+        p_info.information.max_doc_id = docid;
+
 
         // Update the term information
         let info = &mut self.information.terms[term_ix];
@@ -102,21 +97,20 @@ impl TermsImpacts {
             info.max_value = value
         }
 
-        assert!(info.max_doc_id < docid, "Doc ID should be increasing and this is not the case: {} vs {}",
+        assert!(info.length == 1 || (info.max_doc_id < docid), "Doc ID should be increasing and this is not the case: {} vs {}",
             info.max_doc_id, docid);
         info.max_doc_id = docid;
 
-
         // Flush if needed
-        if self.postings[term_ix].len() > self.in_memory_threshold {
+        if self.postings_information[term_ix].postings.len() > self.in_memory_threshold {
             self.flush(term_ix)?;
         }
         Ok(())
     }
 
-    
+    /// Flush a term into disk
     fn flush(&mut self, term_ix: TermIndex) -> Result<(), std::io::Error> {
-        let len_postings = self.postings[term_ix].len();
+        let len_postings = self.postings_information[term_ix].len();
         if len_postings == 0 { 
             return Ok(());
         }
@@ -125,24 +119,23 @@ impl TermsImpacts {
         let position = self.postings_file.stream_position()?;
         debug!("Flush {} at {} (length {})", term_ix, position, len_postings);
 
-        self.information.terms[term_ix].pages.push(TermIndexPageInformation {
-            position: position,
-            length: len_postings,
-        });
+        let mut postings_info = std::mem::replace(&mut self.postings_information[term_ix], PostingsInformation::new());
+        postings_info.information.docid_position = position;
+        postings_info.information.value_position = position; // will be ignored anyways
+        postings_info.information.length = len_postings;
+        self.information.terms[term_ix].pages.push(postings_info.information);
 
         // outputs the postings for this term
-        for ti in self.postings[term_ix].iter() {
+        for ti in postings_info.postings.iter() {
             self.postings_file.write_u64::<BigEndian>(ti.docid)?;
             self.postings_file.write_f32::<BigEndian>(ti.value)?;
         }
 
-        // Cleanup in memory structures
-        self.postings[term_ix].clear();
         Ok(())
     }
 
     fn flush_all(&mut self) -> Result<(), std::io::Error> {
-        for term_ix in 0..self.postings.len() {
+        for term_ix in 0..self.postings_information.len() {
             self.flush(term_ix)?;
         }
         self.postings_file.flush()?;
@@ -306,12 +299,12 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
         if self.index >= self.impacts.len() {
             let info_option = self.info_iter.next();
             if let Some(info) = info_option {   
-                self.file.seek(std::io::SeekFrom::Start(info.position)).expect("Erreur de lecture");
+                self.file.seek(std::io::SeekFrom::Start(info.docid_position)).expect("Erreur de lecture");
 
                 self.index = 0;
                 self.impacts.clear();
                 for _ in 0..info.length {
-                    let docid: DocId = self.file.read_u64::<BigEndian>().expect(&format!("Erreur de lecture at position {}", info.position));
+                    let docid: DocId = self.file.read_u64::<BigEndian>().expect(&format!("Erreur de lecture at position {}", info.docid_position));
                     let value: ImpactValue = self.file.read_f32::<BigEndian>().expect("Erreur de lecture");
                     self.impacts.push(TermImpact {
                         docid: docid,
