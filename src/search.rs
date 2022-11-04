@@ -1,18 +1,20 @@
-use std::{collections::BinaryHeap, cmp::Ordering};
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 use crate::base::{DocId, ImpactValue};
 
 pub struct ScoredDocument {
     pub docid: DocId,
-    pub score: ImpactValue
+    pub score: ImpactValue,
 }
 
 impl Clone for ScoredDocument {
     fn clone(&self) -> Self {
-        Self { docid: self.docid.clone(), score: self.score.clone() }
+        Self {
+            docid: self.docid.clone(),
+            score: self.score.clone(),
+        }
     }
 }
-
 
 impl std::fmt::Display for ScoredDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -27,7 +29,6 @@ impl PartialEq for ScoredDocument {
 }
 
 impl Eq for ScoredDocument {}
-
 
 impl PartialOrd for ScoredDocument {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
@@ -54,23 +55,32 @@ impl Ord for ScoredDocument {
     }
 }
 
-pub struct TopScoredDocuments  {
-    heap: BinaryHeap::<ScoredDocument>,
-    top_k: usize
+pub struct TopScoredDocuments {
+    heap: BinaryHeap<ScoredDocument>,
+    top_k: usize,
 }
 
 impl TopScoredDocuments {
     pub fn new(top_k: usize) -> Self {
-        Self { heap: BinaryHeap::new(), top_k: top_k }
+        Self {
+            heap: BinaryHeap::new(),
+            top_k: top_k,
+        }
     }
 
     /// Add a new candidate, and returns the new lower bound on scores
     pub fn add(&mut self, candidate: DocId, score: ImpactValue) -> ImpactValue {
         if self.heap.len() < self.top_k {
-            self.heap.push(ScoredDocument { docid: candidate, score: score });
+            self.heap.push(ScoredDocument {
+                docid: candidate,
+                score: score,
+            });
         } else if self.heap.peek().expect("should not happen").score < score {
             self.heap.pop();
-            self.heap.push(ScoredDocument { docid: candidate, score: score });
+            self.heap.push(ScoredDocument {
+                docid: candidate,
+                score: score,
+            });
         }
 
         // Returns the minimum score

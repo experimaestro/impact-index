@@ -1,8 +1,8 @@
 //! Main data structure used to describe an index
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
-use crate::base::{ImpactValue, DocId};
+use crate::base::{DocId, ImpactValue};
 
 #[derive(Serialize, Deserialize)]
 pub struct TermIndexPageInformation {
@@ -19,7 +19,7 @@ pub struct TermIndexPageInformation {
     pub max_value: ImpactValue,
 
     /// Maximum document ID for this page
-    pub max_doc_id: DocId
+    pub max_doc_id: DocId,
 }
 
 impl TermIndexPageInformation {
@@ -29,30 +29,28 @@ impl TermIndexPageInformation {
             value_position: 0,
             length: 0,
             max_value: 0.,
-            max_doc_id: 0
+            max_doc_id: 0,
         }
     }
 }
 
 #[derive(Serialize, Deserialize)]
-pub  struct TermIndexInformation {
+pub struct TermIndexInformation {
     pub pages: Vec<TermIndexPageInformation>,
     pub max_value: ImpactValue,
     pub max_doc_id: DocId,
-    pub length: usize
+    pub length: usize,
 }
 
 /// Global information on the index structure
 #[derive(Serialize, Deserialize)]
 pub struct IndexInformation {
-    pub terms: Vec<TermIndexInformation>
+    pub terms: Vec<TermIndexInformation>,
 }
 
 impl IndexInformation {
     /// Creates a new index information
-    pub fn new() -> IndexInformation{
-        IndexInformation {
-            terms: Vec::new()
-        }
+    pub fn new() -> IndexInformation {
+        IndexInformation { terms: Vec::new() }
     }
 }

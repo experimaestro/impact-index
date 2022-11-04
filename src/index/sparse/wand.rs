@@ -1,27 +1,30 @@
-use std::{collections::{HashMap}};
+use std::collections::HashMap;
 
 use log::debug;
 
-use crate::{search::{ScoredDocument, TopScoredDocuments}, base::{DocId, ImpactValue}};
+use crate::{
+    base::{DocId, ImpactValue},
+    search::{ScoredDocument, TopScoredDocuments},
+};
 
-use crate::base::{TermIndex};
+use crate::base::TermIndex;
 
 use super::TermImpact;
 
 /**
  * WAND algorithm
- * 
- *  Broder, A. Z., Carmel, D., Herscovici, M., Soffer, A. & Zien, J. 
+ *
+ *  Broder, A. Z., Carmel, D., Herscovici, M., Soffer, A. & Zien, J.
  * Efficient query evaluation using a two-level retrieval process.
- * Proceedings of the twelfth international conference on Information and knowledge management 426–434 
- * (Association for Computing Machinery, 2003). 
+ * Proceedings of the twelfth international conference on Information and knowledge management 426–434
+ * (Association for Computing Machinery, 2003).
  * DOI 10.1145/956863.956944.
 */
 
 pub trait WandIterator {
     /// Moves to the next document whose id is greater or equal than doc_id
     fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
-    
+
     /// Returns the current term impact (only valid when the iterator is here)
     fn current(&self) -> &TermImpact;
 
@@ -44,9 +47,8 @@ pub trait WandIterator {
     }
 }
 
-
 pub struct ValueIterator<'a> {
-    iterator: Box<dyn WandIterator + 'a>
+    iterator: Box<dyn WandIterator + 'a>,
 }
 
 impl<'a> Iterator for ValueIterator<'a> {
@@ -61,12 +63,12 @@ impl<'a> Iterator for ValueIterator<'a> {
     }
 
     fn max(self) -> Option<Self::Item> {
-        return Some(self.iterator.max_value())
+        return Some(self.iterator.max_value());
     }
 }
 
 struct DocIdIterator<'a> {
-    iterator: Box<dyn WandIterator + 'a>
+    iterator: Box<dyn WandIterator + 'a>,
 }
 impl<'a> Iterator for DocIdIterator<'a> {
     type Item = DocId;
@@ -80,15 +82,15 @@ impl<'a> Iterator for DocIdIterator<'a> {
     }
 
     fn max(self) -> Option<Self::Item> {
-        return Some(self.iterator.max_doc_id())
+        return Some(self.iterator.max_doc_id());
     }
 }
 
 pub trait WandIndex {
     /// Returns a WAND iterator for a given term
-    /// 
+    ///
     /// ## Arguments
-    /// 
+    ///
     /// * `term_ix` The index of the term
     fn iterator(&self, term_ix: TermIndex) -> Box<dyn WandIterator + '_>;
 
@@ -96,25 +98,32 @@ pub trait WandIndex {
     fn length(&self) -> usize;
 
     fn values_iterator(&self, term_ix: TermIndex) -> ValueIterator<'_> {
-        ValueIterator { iterator: self.iterator(term_ix) }
+        ValueIterator {
+            iterator: self.iterator(term_ix),
+        }
     }
 }
 
 /// Wraps an iterator with a query weight
 struct WandIteratorWrapper<'a> {
     iterator: Box<dyn WandIterator + 'a>,
-    query_weight: f32
+    query_weight: f32,
 }
 
 impl std::fmt::Display for WandIteratorWrapper<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(f, "({}; max={})", self.iterator.current(), self.iterator.max_value() * self.query_weight)
+        write!(
+            f,
+            "({}; max={})",
+            self.iterator.current(),
+            self.iterator.max_value() * self.query_weight
+        )
     }
 }
 
 struct WandSearch<'a> {
     cur_doc: Option<DocId>,
-    iterators: Vec<WandIteratorWrapper<'a>>
+    iterators: Vec<WandIteratorWrapper<'a>>,
 }
 
 impl<'a> WandSearch<'a> {
@@ -126,7 +135,7 @@ impl<'a> WandSearch<'a> {
 
             let mut wrapper = WandIteratorWrapper {
                 iterator: iterator,
-                query_weight: weight
+                query_weight: weight,
             };
             if wrapper.iterator.next_min_doc_id(0) {
                 iterators.push(wrapper)
@@ -135,14 +144,15 @@ impl<'a> WandSearch<'a> {
 
         Self {
             cur_doc: None,
-            iterators: iterators
+            iterators: iterators,
         }
     }
 
     fn find_pivot_term(&mut self, theta: f32) -> Option<usize> {
         // Sort iterators by increasing document ID
-        self.iterators.sort_by(|a, b| a.iterator.current().docid.cmp(&b.iterator.current().docid));
-        
+        self.iterators
+            .sort_by(|a, b| a.iterator.current().docid.cmp(&b.iterator.current().docid));
+
         // Accumulate until we get a value greater than theta
         let mut upper_bound = 0.;
         for (ix, iterator) in self.iterators.iter().enumerate() {
@@ -173,13 +183,16 @@ impl<'a> WandSearch<'a> {
             if let Some(ix) = self.find_pivot_term(theta) {
                 // Pivot term has been found
                 let pivot = self.iterators[ix].iterator.current().docid;
-                
+
                 if match self.cur_doc {
                     Some(cur) => pivot <= cur,
-                    None => false
+                    None => false,
                 } {
                     // Pivot has already been considered, advance one iterator
-                    debug!("Pivot {} has already been considered [{}], advancing", pivot, ix);
+                    debug!(
+                        "Pivot {} has already been considered [{}], advancing",
+                        pivot, ix
+                    );
                     self.advance(ix, pivot);
                 } else if self.iterators[0].iterator.current().docid == pivot {
                     /* Success: all preceding terms belong to the pivot */
@@ -193,16 +206,18 @@ impl<'a> WandSearch<'a> {
             } else {
                 return None;
             }
-        } 
-
+        }
     }
 }
-
 
 /**
  * Search using the WAND algorithmw
  */
-pub fn search_wand<'a>(index: &'a dyn WandIndex, query: &HashMap<TermIndex, ImpactValue>, top_k: usize) -> Vec<ScoredDocument> {
+pub fn search_wand<'a>(
+    index: &'a dyn WandIndex,
+    query: &HashMap<TermIndex, ImpactValue>,
+    top_k: usize,
+) -> Vec<ScoredDocument> {
     let mut search = WandSearch::new(index, query);
 
     let mut results = TopScoredDocuments::new(top_k);
@@ -217,12 +232,11 @@ pub fn search_wand<'a>(index: &'a dyn WandIndex, query: &HashMap<TermIndex, Impa
             if c.docid != candidate {
                 break;
             }
-            score +=  x.query_weight * c.value;
+            score += x.query_weight * c.value;
         }
 
         // Update the heap
         theta = results.add(candidate, score).max(0.);
-        
     }
 
     results.into_sorted_vec()

@@ -1,19 +1,19 @@
 use std::fmt;
 
-use serde::{Serialize, Deserialize};
 use crate::base::{DocId, ImpactValue};
+use serde::{Deserialize, Serialize};
 
-pub mod index;
-pub mod wand;
-pub mod builder; 
+pub mod builder;
 pub mod compress;
+pub mod index;
 pub mod sharding;
+pub mod wand;
 
 /// Term impact = document ID + impact value
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct TermImpact {
     pub docid: DocId,
-    pub value: ImpactValue
+    pub value: ImpactValue,
 }
 
 impl std::fmt::Display for TermImpact {
@@ -23,4 +23,4 @@ impl std::fmt::Display for TermImpact {
 }
 
 /// An iterator on term impacts
-pub type TermImpactIterator<'a> = Box<dyn Iterator<Item=TermImpact> + 'a + Send>;
+pub type TermImpactIterator<'a> = Box<dyn Iterator<Item = TermImpact> + 'a + Send>;
