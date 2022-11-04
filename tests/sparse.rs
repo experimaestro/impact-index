@@ -11,10 +11,7 @@ use xpmir_rust::{
 
 use helpers::documents::{create_document, document_vectors, TestDocument};
 
-use rand::{
-    rngs::{StdRng, ThreadRng},
-    RngCore, SeedableRng,
-};
+use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
 use temp_dir::TempDir;
 
