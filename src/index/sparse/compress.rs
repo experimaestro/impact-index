@@ -34,13 +34,13 @@ pub fn compress(
         .truncate(true)
         .create(true)
         .open(path.join("value.dat"))
-        .expect("Could not create the data file");
+        .expect("Could not create the values file");
     let mut docid_writer = File::options()
         .write(true)
         .truncate(true)
         .create(true)
         .open(path.join("docid.dat"))
-        .expect("Could not create the data file");
+        .expect("Could not create the document IDs file");
 
     for term_ix in 0..index.length() {
         let mut it = index.iterator(term_ix);
