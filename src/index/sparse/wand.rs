@@ -1,3 +1,5 @@
+//! Implementation for WAND and Block-Max WAND algorithms
+
 use std::collections::HashMap;
 
 use log::debug;
@@ -21,26 +23,41 @@ use super::TermImpact;
  * DOI 10.1145/956863.956944.
 */
 
+/// Traits for iterators supporting WAND searches
 pub trait WandIterator {
     /// Moves to the next document whose id is greater or equal than doc_id
+    /// The move can be "shallow", i.e. no need to actually hold a record:
+    /// this is used by the BMW algorithm
     fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
 
     /// Returns the current term impact (only valid when the iterator is here)
-    fn current(&self) -> &TermImpact;
+    fn current(&self) -> TermImpact;
+
+    /// Max block document ID
+    fn max_block_value(&self) -> ImpactValue {
+        // If just one block...
+        self.max_value()
+    }
 
     /// Returns the term maximum impact
     fn max_value(&self) -> ImpactValue;
 
-    /// Returns the term maximum impact
+    /// Returns the maximum document ID
     fn max_doc_id(&self) -> DocId;
 
-    /// Returns the length
+    /// Max block document ID
+    fn max_block_doc_id(&self) -> DocId {
+        // If just one block...
+        self.max_doc_id()
+    }
+
+    /// Returns the total number of records
     fn length(&self) -> usize;
 
     /// Returns the next element
     fn next(&mut self) -> Option<TermImpact> {
         if self.next_min_doc_id(0) {
-            Some(*self.current())
+            Some(self.current())
         } else {
             None
         }

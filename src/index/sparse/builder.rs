@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     fs::File,
     io::{Seek, Write},
     path::{Path, PathBuf},
@@ -315,58 +316,100 @@ pub trait SparseBuilderIndexTrait<'a> {
 
 pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
+    info: Option<&'a TermIndexPageInformation>,
     file: &'a File,
-    impacts: Vec<TermImpact>,
+    impacts: Option<Vec<TermImpact>>,
     index: usize,
     term_ix: TermIndex,
 }
 
 impl<'a> SparseBuilderIndexIterator<'a> {
     fn new<'b: 'a>(index: &'b SparseBuilderIndex, term_ix: TermIndex) -> Self {
-        let v = Vec::<TermImpact>::new();
-        let iter = if term_ix < index.terms.len() {
+        let mut iter = if term_ix < index.terms.len() {
             Box::new(index.terms[term_ix].pages.iter())
         } else {
             Box::new([].iter())
         };
 
+        let info = iter.next();
+
         Self {
+            info: info,
             info_iter: iter,
             file: &index.file,
-            impacts: v,
+
+            // Impact vector (None if not loaded)
+            impacts: None,
+
+            /// The current impact index
             index: 0,
+
+            /// Just for information purpose
             term_ix: term_ix,
         }
+    }
+
+    /// Move the iterator to the first block where a document of
+    /// at least `min_doc_id` is present
+    fn move_iterator(&mut self, min_doc_id: DocId) -> bool {
+        // Check first if all right
+        while let Some(info) = self.info {
+            if info.max_doc_id >= min_doc_id {
+                debug!("For {}, {} >= {}", self.term_ix, info.max_doc_id, min_doc_id);
+                return true;
+            }
+
+            // Go to the next block
+            self.info = self.info_iter.next();
+            self.impacts = None
+        }
+        false
+    }
+
+    fn read_block(&mut self, info: &TermIndexPageInformation) {
+        self.file
+            .seek(std::io::SeekFrom::Start(info.docid_position))
+            .expect("Erreur de lecture");
+
+        self.index = 0;
+        let mut impacts = Vec::new();
+        for _ in 0..info.length {
+            let docid: DocId = self.file.read_u64::<BigEndian>().expect(&format!(
+                "Erreur de lecture at position {}",
+                info.docid_position
+            ));
+            let value: ImpactValue = self
+                .file
+                .read_f32::<BigEndian>()
+                .expect("Erreur de lecture");
+            impacts.push(TermImpact {
+                docid: docid,
+                value: value,
+            })
+        }
+
+        self.impacts = Some(impacts)
     }
 }
 
 impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
     type Item = TermImpact;
 
+    /// Iterate to the next doc id
     fn next(&mut self) -> Option<Self::Item> {
-        if self.index >= self.impacts.len() {
-            let info_option = self.info_iter.next();
-            if let Some(info) = info_option {
-                self.file
-                    .seek(std::io::SeekFrom::Start(info.docid_position))
-                    .expect("Erreur de lecture");
-
-                self.index = 0;
-                self.impacts.clear();
-                for _ in 0..info.length {
-                    let docid: DocId = self.file.read_u64::<BigEndian>().expect(&format!(
-                        "Erreur de lecture at position {}",
-                        info.docid_position
-                    ));
-                    let value: ImpactValue = self
-                        .file
-                        .read_f32::<BigEndian>()
-                        .expect("Erreur de lecture");
-                    self.impacts.push(TermImpact {
-                        docid: docid,
-                        value: value,
-                    })
+        // Load impacts from block if not done yet
+        if let Some(impacts) = &self.impacts {
+            if self.index >= impacts.len() {
+                self.info = self.info_iter.next();
+                if let Some(info) = self.info {
+                    self.read_block(info);
+                } else {
+                    return None;
                 }
+            }
+        } else {
+            if let Some(info) = self.info {
+                self.read_block(info)
             } else {
                 return None;
             }
@@ -374,15 +417,16 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 
         let index = self.index;
         self.index += 1;
-        return Some(self.impacts[index]);
+        return Some(self.impacts.as_ref().expect("should not be null")[index]);
     }
 }
 
 // --- Wand
 
 struct WandSparseBuilderIndexIterator<'a> {
-    iterator: SparseBuilderIndexIterator<'a>,
-    current_value: TermImpact,
+    iterator: RefCell<SparseBuilderIndexIterator<'a>>,
+    current_min_docid: Option<DocId>,
+    current_value: RefCell<Option<TermImpact>>,
     max_value: ImpactValue,
     max_doc_id: DocId,
     length: usize,
@@ -392,45 +436,87 @@ impl<'a> WandSparseBuilderIndexIterator<'a> {
     fn new(index: &'a SparseBuilderIndex, term_ix: TermIndex) -> Self {
         let info = &index.terms[term_ix];
         Self {
-            iterator: SparseBuilderIndexIterator::new(index, term_ix),
-            current_value: TermImpact {
-                docid: 0,
-                value: 0.,
-            },
+            iterator: RefCell::new(SparseBuilderIndexIterator::new(index, term_ix)),
+            current_value: RefCell::new(None),
             max_value: info.max_value,
             max_doc_id: info.max_doc_id,
             length: info.length,
+            current_min_docid: None,
         }
     }
 }
 
 impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
-    fn next_min_doc_id(&mut self, doc_id: DocId) -> bool {
-        while let Some(v) = self.iterator.next() {
-            if v.docid >= doc_id {
-                debug!(
-                    "[{}] Returning {} ({})",
-                    self.iterator.term_ix, v.docid, v.value
-                );
-                self.current_value = v;
-                return true;
-            }
-            debug!(
-                "[{}] Skipping {} ({}) / {}",
-                self.iterator.term_ix, v.docid, v.value, doc_id
-            );
-        }
+    fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
+        // Move to the block having at least one document greater that min_doc_id
+        self.current_min_docid = Some(min_doc_id.max(
+            if let Some(impact) = self.current_value.get_mut() { impact.docid + 1 } else { 0 }
+        ));
+        let min_doc_id = self.current_min_docid.expect("Should not be None");
 
-        debug!("[{}] WAND iterator closing", self.iterator.term_ix);
-        return false;
+        let ok = self.iterator.get_mut().move_iterator(min_doc_id);
+
+        if ! ok {
+            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix)
+        } else {
+            debug!("[{}] We have a candidate for {}", self.iterator.get_mut().term_ix, min_doc_id)
+        }
+        ok
     }
 
-    fn current(&self) -> &TermImpact {
-        return &self.current_value;
+    fn current(&self) -> TermImpact {
+        let min_docid = self.current_min_docid.expect("Should not be null");
+        {
+            let iterator = self.iterator.borrow();
+            debug!("[{}] Searching for next {}", iterator.term_ix, min_docid);
+        }
+        
+        let mut current_value = self.current_value.borrow_mut();
+
+        if current_value.and_then(|x| Some(x.docid < min_docid)).or(Some(true)).unwrap() {
+            *current_value = None;
+            assert!(current_value.is_none());
+
+            let mut iterator = self.iterator.borrow_mut();
+
+            while let Some(v) = iterator.next() {
+                if v.docid >= min_docid {
+                    debug!("[{}] Returning {} ({})", iterator.term_ix, v.docid, v.value);
+
+                    *current_value = Some(v);
+                    break;
+                }
+                debug!(
+                    "[{}] Skipping {} ({}) / {}",
+                    iterator.term_ix, v.docid, v.value, min_docid
+                );
+            }
+        } else {
+            let iterator = self.iterator.borrow();
+            debug!("[{}] Current value was good {} >= {}", iterator.term_ix, current_value.expect("").docid, min_docid);
+        }
+
+        return current_value.expect("No current value");
     }
 
     fn max_value(&self) -> ImpactValue {
         return self.max_value;
+    }
+
+    fn max_block_doc_id(&self) -> DocId {
+        self.iterator
+            .borrow()
+            .info
+            .expect("Iterator was over")
+            .max_doc_id
+    }
+
+    fn max_block_value(&self) -> ImpactValue {
+        self.iterator
+            .borrow()
+            .info
+            .expect("Iterator was over")
+            .max_value
     }
 
     fn max_doc_id(&self) -> DocId {

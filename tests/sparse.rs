@@ -8,6 +8,7 @@ use xpmir_rust::{
     },
     search::{ScoredDocument, TopScoredDocuments},
 };
+use log::debug;
 
 use helpers::documents::{create_document, document_vectors, TestDocument};
 
@@ -16,6 +17,12 @@ use rand_distr::{Distribution, LogNormal};
 use temp_dir::TempDir;
 
 use std::{collections::HashMap, fmt::Display};
+
+/// Initialize the logger
+fn init_logger() {
+    let _ = env_logger::builder().is_test(true).try_init();
+}
+
 
 trait ApproxEq {
     fn approx_eq(&self, other: &Self, delta: f64) -> bool;
@@ -205,6 +212,9 @@ fn test_search(
     #[case] top_k: usize,
     #[case] seed: Option<u64>,
 ) {
+    init_logger();
+    // std::env::set_var("RUST_LOG", "trace");
+    debug!("Search test start");
     let mut data = TestIndex::new(
         vocabulary_size,
         document_count,
