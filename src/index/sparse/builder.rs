@@ -56,7 +56,8 @@ impl TermsImpacts {
         let path = folder.join(format!("postings.dat"));
 
         TermsImpacts {
-            /// Maximum number of postings (for a term, 16kb by default)
+            /// Maximum number of postings For a term, 16 * 1024 postings by
+            /// default, that is roughly 4Gb of memory in total
             in_memory_threshold: 16 * 1024,
             folder: folder.to_path_buf(),
             postings_file: File::options()
