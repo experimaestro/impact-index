@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::base::{DocId, ImpactValue};
+use crate::base::{DocId, ImpactValue, TermIndex};
+
+use super::TermImpact;
 
 #[derive(Serialize, Deserialize)]
 pub struct TermIndexPageInformation {
@@ -52,5 +54,106 @@ impl IndexInformation {
     /// Creates a new index information
     pub fn new() -> IndexInformation {
         IndexInformation { terms: Vec::new() }
+    }
+}
+
+
+/// Generic trait for block-based term impact iterators
+pub trait BlockTermImpactIterator {
+    /// Moves to the next document whose id is greater or equal than doc_id
+    /// The move can be "shallow", i.e. no need to actually hold a record:
+    /// this is used by the BMW algorithm
+    fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
+
+    /// Returns the current term impact (can panic)
+    fn current(&self) -> TermImpact;
+
+    /// Returns the term maximum impact
+    fn max_value(&self) -> ImpactValue;
+
+    /// Returns the maximum document ID
+    fn max_doc_id(&self) -> DocId;
+
+    /// Max block document ID (by default, returns the maximum over all impacts)
+    fn max_block_value(&self) -> ImpactValue {
+        // If just one block...
+        self.max_value()
+    }
+
+    /// Max block document ID (by default, returns the maximum over all impacts)
+    fn max_block_doc_id(&self) -> DocId {
+        // If just one block...
+        self.max_doc_id()
+    }
+
+    /// Returns the total number of records
+    fn length(&self) -> usize;
+
+    /// Returns the next element
+    fn next(&mut self) -> Option<TermImpact> {
+        if self.next_min_doc_id(0) {
+            Some(self.current())
+        } else {
+            None
+        }
+    }
+}
+
+
+pub trait BlockTermImpactIndex {
+    /// Returns a WAND iterator for a given term
+    ///
+    /// ## Arguments
+    ///
+    /// * `term_ix` The index of the term
+    fn iterator(&self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_>;
+
+    /// Returns the number of terms in the index
+    fn length(&self) -> usize;
+
+    fn values_iterator(&self, term_ix: TermIndex) -> ValueIterator<'_> {
+        ValueIterator {
+            iterator: self.iterator(term_ix),
+        }
+    }
+}
+
+
+pub struct ValueIterator<'a> {
+    iterator: Box<dyn BlockTermImpactIterator + 'a>,
+}
+
+impl<'a> Iterator for ValueIterator<'a> {
+    type Item = ImpactValue;
+
+    fn next(&mut self) -> Option<ImpactValue> {
+        if let Some(ti) = self.iterator.next() {
+            Some(ti.value)
+        } else {
+            None
+        }
+    }
+
+    fn max(self) -> Option<Self::Item> {
+        return Some(self.iterator.max_value());
+    }
+}
+
+struct DocIdIterator<'a> {
+    iterator: Box<dyn BlockTermImpactIterator + 'a>,
+}
+impl<'a> Iterator for DocIdIterator<'a> {
+    type Item = DocId;
+
+    fn next(&mut self) -> Option<DocId> {
+        if let Some(ti) = self.iterator.next() {
+            Some(ti.docid)
+        } else {
+            None
+        }
+    }
+
+    fn max(self) -> Option<Self::Item> {
+        return Some(self.iterator.max_doc_id());
     }
 }

@@ -6,7 +6,7 @@ use std::{
     path::Path,
 };
 
-use super::wand::{WandIndex, WandIterator};
+use super::{index::{BlockTermImpactIndex,BlockTermImpactIterator}};
 use crate::base::{DocId, ImpactValue};
 use sucds::{EliasFanoBuilder, Searial};
 
@@ -18,23 +18,25 @@ pub trait CompressorFactory<T> {
     fn init<'a>(
         &self,
         value_writer: &'a mut dyn Write,
-        it: &dyn WandIterator,
+        it: &dyn BlockTermImpactIterator,
     ) -> Box<dyn Compressor<T> + 'a>;
 }
 
 /// Compress the impact values
 pub fn compress(
     path: &Path,
-    index: &dyn WandIndex,
+    index: &dyn BlockTermImpactIndex,
     doc_compressor_factory: &dyn CompressorFactory<DocId>,
     value_compressor_factory: &dyn CompressorFactory<ImpactValue>,
 ) -> Result<(), std::io::Error> {
+    // File for impact values
     let mut value_writer = File::options()
         .write(true)
         .truncate(true)
         .create(true)
         .open(path.join("value.dat"))
         .expect("Could not create the values file");
+    // File for document IDs
     let mut docid_writer = File::options()
         .write(true)
         .truncate(true)
@@ -90,7 +92,7 @@ impl CompressorFactory<DocId> for EliasFanoCompressorFactory {
     fn init<'a>(
         &self,
         writer: &'a mut dyn Write,
-        it: &dyn WandIterator,
+        it: &dyn BlockTermImpactIterator,
     ) -> Box<dyn Compressor<DocId> + 'a> {
         Box::new(EliasFanoCompressor {
             builder: EliasFanoBuilder::new(it.max_doc_id().try_into().unwrap(), it.length())

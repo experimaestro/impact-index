@@ -1,5 +1,5 @@
 use ndarray::Array;
-use rand_distr::{Poisson, LogNormal, Distribution};
+use rand_distr::{Poisson, Normal, Distribution};
 use rand::{self, RngCore};
 use std::cmp::min;
 
@@ -21,14 +21,14 @@ pub fn create_document(lambda_words: f32, max_words: usize, vocabulary_size: usi
     let num_words = 1 + poi.sample(rng) as usize;
 
     let term_ids = rand::seq::index::sample(rng, vocabulary_size, min(num_words, max_words)).into_vec();
-    let log_normal = LogNormal::new(0., 1.).unwrap();
+    let normal = Normal::<f32>::new(1., 1.).unwrap();
 
     let mut document = TestDocument { terms: Vec::new() };
 
     for term_ix in term_ids.iter() {
         document.terms.push(TermWeight { 
             term_ix: *term_ix, 
-            weight: log_normal.sample(rng)
+            weight: normal.sample(rng).abs() + 1e-5
         })
     }
 

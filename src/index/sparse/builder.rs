@@ -11,7 +11,7 @@ use ndarray::{ArrayBase, Data, Ix1};
 
 use super::{
     index::{IndexInformation, TermIndexPageInformation},
-    wand::{WandIndex, WandIterator},
+    index::{BlockTermImpactIndex, BlockTermImpactIterator},
     TermImpact, TermImpactIterator,
 };
 use crate::{
@@ -447,7 +447,7 @@ impl<'a> WandSparseBuilderIndexIterator<'a> {
     }
 }
 
-impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
+impl<'a> BlockTermImpactIterator for WandSparseBuilderIndexIterator<'a> {
     fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
         // Move to the block having at least one document greater that min_doc_id
         self.current_min_docid = Some(min_doc_id.max(
@@ -529,8 +529,8 @@ impl<'a> WandIterator for WandSparseBuilderIndexIterator<'a> {
     }
 }
 
-impl WandIndex for SparseBuilderIndex {
-    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn WandIterator + 'a> {
+impl BlockTermImpactIndex for SparseBuilderIndex {
+    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a> {
         Box::new(WandSparseBuilderIndexIterator::new(self, term_ix))
     }
 

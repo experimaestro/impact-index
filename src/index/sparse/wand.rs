@@ -11,7 +11,7 @@ use crate::{
 
 use crate::base::TermIndex;
 
-use super::TermImpact;
+use super::{TermImpact, index::{BlockTermImpactIterator, BlockTermImpactIndex}};
 
 /**
  * WAND algorithm
@@ -23,111 +23,13 @@ use super::TermImpact;
  * DOI 10.1145/956863.956944.
 */
 
-/// Traits for iterators supporting WAND searches
-pub trait WandIterator {
-    /// Moves to the next document whose id is greater or equal than doc_id
-    /// The move can be "shallow", i.e. no need to actually hold a record:
-    /// this is used by the BMW algorithm
-    fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
-
-    /// Returns the current term impact (only valid when the iterator is here)
-    fn current(&self) -> TermImpact;
-
-    /// Max block document ID
-    fn max_block_value(&self) -> ImpactValue {
-        // If just one block...
-        self.max_value()
-    }
-
-    /// Returns the term maximum impact
-    fn max_value(&self) -> ImpactValue;
-
-    /// Returns the maximum document ID
-    fn max_doc_id(&self) -> DocId;
-
-    /// Max block document ID
-    fn max_block_doc_id(&self) -> DocId {
-        // If just one block...
-        self.max_doc_id()
-    }
-
-    /// Returns the total number of records
-    fn length(&self) -> usize;
-
-    /// Returns the next element
-    fn next(&mut self) -> Option<TermImpact> {
-        if self.next_min_doc_id(0) {
-            Some(self.current())
-        } else {
-            None
-        }
-    }
-}
-
-pub struct ValueIterator<'a> {
-    iterator: Box<dyn WandIterator + 'a>,
-}
-
-impl<'a> Iterator for ValueIterator<'a> {
-    type Item = ImpactValue;
-
-    fn next(&mut self) -> Option<ImpactValue> {
-        if let Some(ti) = self.iterator.next() {
-            Some(ti.value)
-        } else {
-            None
-        }
-    }
-
-    fn max(self) -> Option<Self::Item> {
-        return Some(self.iterator.max_value());
-    }
-}
-
-struct DocIdIterator<'a> {
-    iterator: Box<dyn WandIterator + 'a>,
-}
-impl<'a> Iterator for DocIdIterator<'a> {
-    type Item = DocId;
-
-    fn next(&mut self) -> Option<DocId> {
-        if let Some(ti) = self.iterator.next() {
-            Some(ti.docid)
-        } else {
-            None
-        }
-    }
-
-    fn max(self) -> Option<Self::Item> {
-        return Some(self.iterator.max_doc_id());
-    }
-}
-
-pub trait WandIndex {
-    /// Returns a WAND iterator for a given term
-    ///
-    /// ## Arguments
-    ///
-    /// * `term_ix` The index of the term
-    fn iterator(&self, term_ix: TermIndex) -> Box<dyn WandIterator + '_>;
-
-    /// Returns the number of terms in the index
-    fn length(&self) -> usize;
-
-    fn values_iterator(&self, term_ix: TermIndex) -> ValueIterator<'_> {
-        ValueIterator {
-            iterator: self.iterator(term_ix),
-        }
-    }
-}
-
 /// Wraps an iterator with a query weight
-struct WandIteratorWrapper<'a> {
-    iterator: Box<dyn WandIterator + 'a>,
+struct BlockTermImpactIteratorWrapper<'a> {
+    iterator: Box<dyn BlockTermImpactIterator + 'a>,
     query_weight: f32,
 }
 
-impl std::fmt::Display for WandIteratorWrapper<'_> {
+impl std::fmt::Display for BlockTermImpactIteratorWrapper<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
@@ -140,17 +42,17 @@ impl std::fmt::Display for WandIteratorWrapper<'_> {
 
 struct WandSearch<'a> {
     cur_doc: Option<DocId>,
-    iterators: Vec<WandIteratorWrapper<'a>>,
+    iterators: Vec<BlockTermImpactIteratorWrapper<'a>>,
 }
 
 impl<'a> WandSearch<'a> {
-    fn new<'b: 'a>(index: &'b dyn WandIndex, query: &HashMap<TermIndex, ImpactValue>) -> Self {
+    fn new<'b: 'a>(index: &'b dyn BlockTermImpactIndex, query: &HashMap<TermIndex, ImpactValue>) -> Self {
         let mut iterators = Vec::new();
 
         for (&ix, &weight) in query.iter() {
             let iterator = index.iterator(ix);
 
-            let mut wrapper = WandIteratorWrapper {
+            let mut wrapper = BlockTermImpactIteratorWrapper {
                 iterator: iterator,
                 query_weight: weight,
             };
@@ -231,7 +133,7 @@ impl<'a> WandSearch<'a> {
  * Search using the WAND algorithmw
  */
 pub fn search_wand<'a>(
-    index: &'a dyn WandIndex,
+    index: &'a dyn BlockTermImpactIndex,
     query: &HashMap<TermIndex, ImpactValue>,
     top_k: usize,
 ) -> Vec<ScoredDocument> {
