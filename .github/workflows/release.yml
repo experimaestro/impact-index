@@ -20,19 +20,19 @@ jobs:
         name: wheels
         path: dist
 
-  windows:
-    runs-on: windows-latest
-    steps:
-    - uses: actions/checkout@v3
-    - uses: PyO3/maturin-action@v1
-      with:
-        command: build
-        args: --release --no-sdist -o dist
-    - name: Upload wheels
-      uses: actions/upload-artifact@v2
-      with:
-        name: wheels
-        path: dist
+  # windows:
+  #   runs-on: windows-latest
+  #   steps:
+  #   - uses: actions/checkout@v3
+  #   - uses: PyO3/maturin-action@v1
+  #     with:
+  #       command: build
+  #       args: --release --no-sdist -o dist
+  #   - name: Upload wheels
+  #     uses: actions/upload-artifact@v2
+  #     with:
+  #       name: wheels
+  #       path: dist
 
   macos:
     runs-on: macos-latest
