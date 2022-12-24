@@ -46,6 +46,7 @@ pub struct PyScoredDocument {
 
 #[pyclass]
 struct SparseSparseBuilderIndexIterator {
+    // Use dead code to ensure we have a valid index when iterating
     #[allow(dead_code)]
     index: Arc<Mutex<SparseBuilderIndex>>,
     iter: TermImpactIterator<'static>,

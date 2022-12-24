@@ -424,7 +424,7 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 
 // --- Wand
 
-struct WandSparseBuilderIndexIterator<'a> {
+struct SparseBuilderBlockTermImpactIterator<'a> {
     iterator: RefCell<SparseBuilderIndexIterator<'a>>,
     current_min_docid: Option<DocId>,
     current_value: RefCell<Option<TermImpact>>,
@@ -433,7 +433,7 @@ struct WandSparseBuilderIndexIterator<'a> {
     length: usize,
 }
 
-impl<'a> WandSparseBuilderIndexIterator<'a> {
+impl<'a> SparseBuilderBlockTermImpactIterator<'a> {
     fn new(index: &'a SparseBuilderIndex, term_ix: TermIndex) -> Self {
         let info = &index.terms[term_ix];
         Self {
@@ -447,7 +447,7 @@ impl<'a> WandSparseBuilderIndexIterator<'a> {
     }
 }
 
-impl<'a> BlockTermImpactIterator for WandSparseBuilderIndexIterator<'a> {
+impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
     fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
         // Move to the block having at least one document greater that min_doc_id
         self.current_min_docid = Some(min_doc_id.max(
@@ -531,7 +531,7 @@ impl<'a> BlockTermImpactIterator for WandSparseBuilderIndexIterator<'a> {
 
 impl BlockTermImpactIndex for SparseBuilderIndex {
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a> {
-        Box::new(WandSparseBuilderIndexIterator::new(self, term_ix))
+        Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
 
     fn length(&self) -> usize {
