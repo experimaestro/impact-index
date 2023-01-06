@@ -530,7 +530,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
 }
 
 impl BlockTermImpactIndex for SparseBuilderIndex {
-    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a> {
+    fn iterator(&self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
 

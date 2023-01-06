@@ -15,8 +15,8 @@ use sucds::{EliasFanoBuilder, Searial};
 // ---- Compression ---
 // 
 pub trait Compressor<T> {
-    fn write(&mut self, writer: &mut dyn Write, values: &[T]);
-    fn read(&mut self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=T>>;
+    fn write(&self, writer: &mut dyn Write, values: &[T]);
+    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=T>>;
 }
 
 #[typetag::serde(tag = "type")]
@@ -87,7 +87,7 @@ pub fn compress(
     path: &Path,
     index: &dyn BlockTermImpactIndex,
     max_block_size: usize,
-    docids_compressor: Box<dyn DocIdCompressor>,
+    doc_ids_compressor: Box<dyn DocIdCompressor>,
     values_compressor: Box<dyn ValueCompressor>,
 ) -> Result<(), std::io::Error> {
     // File for impact values
@@ -109,7 +109,7 @@ pub fn compress(
     // Global information
     let mut information = CompressedIndexInformation { 
         terms: Vec::new(),
-        doc_ids_compressor: docids_compressor,
+        doc_ids_compressor: doc_ids_compressor,
         values_compressor: values_compressor
     };
     let value_position = 0;
@@ -130,8 +130,8 @@ pub fn compress(
         
         while flag {
             // Read up to max_block_size records
-            let impacts = Vec::new();
-            let docids = Vec::<usize>::new();
+            let mut impacts = Vec::new();
+            let mut docids = Vec::<usize>::new();
             flag = false;
             while let Some(ti) = it.next() {
                 docids.push(ti.docid as usize);
@@ -143,8 +143,8 @@ pub fn compress(
             }   
 
             // Write
-            docids_compressor.write(&mut value_writer, &docids);
-            values_compressor.write(&mut docid_writer, &impacts);
+            information.doc_ids_compressor.write(&mut value_writer, &docids);
+            information.values_compressor.write(&mut docid_writer, &impacts);
 
             // Add information
             let new_value_position = value_writer.stream_position()?;
@@ -154,7 +154,7 @@ pub fn compress(
                 value_position_range: (value_position, new_value_position),
                 length: impacts.len(),
                 max_value: impacts.iter().fold(0f32, |cur, x| { cur.max(*x) }),
-                max_doc_id: docids.iter().fold(0, |cur, x| { cur.max(*x) })
+                max_doc_id: docids.iter().fold(0 as usize, |cur, x| -> usize { cur.max(*x) }).try_into().unwrap()
             };
 
             term_information.max_value = term_information.max_value.max(block_term_information.max_value);
@@ -195,10 +195,10 @@ struct EliasFanoCompressor {
 }
 
 impl<'a> Compressor<usize> for EliasFanoCompressor {
-    fn write(&mut self, writer: &mut dyn Write, values: &[usize]) {
+    fn write(&self, writer: &mut dyn Write, values: &[usize]) {
         let max_value = *values.iter().max().unwrap();
 
-        let c = EliasFanoBuilder::new(max_value, values.len())
+        let mut c = EliasFanoBuilder::new(max_value, values.len())
                 .expect("Error when building");
 
         c.append(values)
@@ -206,7 +206,7 @@ impl<'a> Compressor<usize> for EliasFanoCompressor {
         c.build().serialize_into(writer).expect("Yoooo");
     }
 
-    fn read(&mut self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=usize>> {
+    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=usize>> {
         todo!()
     }
 }

@@ -101,23 +101,23 @@ pub trait BlockTermImpactIterator {
 
 
 pub trait BlockTermImpactIndex {
-    /// Returns a WAND iterator for a given term
+    /// Returns an iterator for a given term
     ///
     /// ## Arguments
     ///
     /// * `term_ix` The index of the term
     fn iterator(&self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_>;
 
+    /// Returns all the iterators for a term (if split list)
+    fn iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
+        let mut v = Vec::new();
+        v.push(self.iterator(term_ix));
+        v
+    }
+
     /// Returns the number of terms in the index
     fn length(&self) -> usize;
-
-    fn values_iterator(&self, term_ix: TermIndex) -> ValueIterator<'_> {
-        ValueIterator {
-            iterator: self.iterator(term_ix),
-        }
-    }
 }
-
 
 pub struct ValueIterator<'a> {
     iterator: Box<dyn BlockTermImpactIterator + 'a>,

@@ -11,7 +11,7 @@ use crate::{
 
 use crate::base::TermIndex;
 
-use super::{TermImpact, index::{BlockTermImpactIterator, BlockTermImpactIndex}};
+use super::{index::{BlockTermImpactIterator, BlockTermImpactIndex}};
 
 /**
  * WAND algorithm

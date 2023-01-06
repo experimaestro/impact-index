@@ -22,7 +22,8 @@ struct MaxScoreSearch<'a> {
     iterators: Vec<MaxScoreTermIterator<'a>>,
 }
 
-
+// TODO: implement max score search with posting list clipping
+// See "Accelerating Learned Sparse Indexes Via Term Impact Decomposition" (EMNLP 2022)
 impl<'a> MaxScoreSearch<'a> {
     /// Initialize the search structure
     fn new<'b: 'a>(index: &'b dyn BlockTermImpactIndex, query: &HashMap<TermIndex, ImpactValue>) -> Self {
