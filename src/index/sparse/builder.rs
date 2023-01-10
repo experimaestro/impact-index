@@ -382,7 +382,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
         const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
         let start = info.docid_position as usize;
-        let end = (info.docid_position as usize + info.length * RECORD_SIZE);
+        let end = info.docid_position as usize + info.length * RECORD_SIZE;
         let mut buffer = &self.mmap[start..end];
 
         self.index = 0;

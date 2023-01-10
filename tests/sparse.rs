@@ -4,6 +4,8 @@ use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
+        index::BlockTermImpactIndex,
+        maxscore::search_maxscore,
         wand::search_wand,
         TermImpact,
     },
@@ -197,6 +199,12 @@ fn test_heap() {
     vec_compare(&observed, &expected);
 }
 
+type SearchFn = fn(
+    index: &dyn BlockTermImpactIndex,
+    query: &HashMap<TermIndex, ImpactValue>,
+    top_k: usize,
+) -> Vec<ScoredDocument>;
+
 #[rstest]
 #[case(true, 100, 1000, 50., 50, 10, None)]
 #[case(true, 100, 1000, 50., 50, 1, None)]
@@ -210,6 +218,7 @@ fn test_search(
     #[case] max_words: usize,
     #[case] top_k: usize,
     #[case] seed: Option<u64>,
+    #[values(search_wand, search_maxscore)] search_fn: SearchFn,
 ) {
     init_logger();
     // std::env::set_var("RUST_LOG", "trace");
@@ -235,7 +244,7 @@ fn test_search(
         .collect();
 
     // Search with WAND
-    let observed = search_wand(&mut index, &query, top_k);
+    let observed = search_fn(&mut index, &query, top_k);
     eprintln!("(1) observed results");
     for (ix, result) in observed.iter().enumerate() {
         eprintln!(
