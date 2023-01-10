@@ -35,7 +35,7 @@ impl MaxScoreTermIterator<'_> {
     }
     fn seek_gek(&mut self, doc_id: DocId) -> bool {
         if self.impact.docid >= doc_id {
-            return true
+            return true;
         }
         if !self.iterator.next_min_doc_id(doc_id) {
             return false;
@@ -92,9 +92,9 @@ pub fn search_maxscore<'a>(
 
     while !&active.is_empty() {
         // select next document, match all cursors
-        let candidate: DocId = (&active)
-            .iter()
-            .fold(DocId::MAX as DocId, |cur, t| cur.min(iterators[*t].impact.docid));
+        let candidate: DocId = (&active).iter().fold(DocId::MAX as DocId, |cur, t| {
+            cur.min(iterators[*t].impact.docid)
+        });
 
         passive.retain(|t| iterators[*t].seek_gek(candidate));
 

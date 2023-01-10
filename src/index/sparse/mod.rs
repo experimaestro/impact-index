@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::fmt;
 
-use crate::base::{DocId, ImpactValue};
+use crate::base::{DocId, ImpactValue, TermIndex};
+use crate::search::ScoredDocument;
+use index::BlockTermImpactIndex;
 use serde::{Deserialize, Serialize};
 
 pub mod builder;
@@ -25,3 +28,10 @@ impl std::fmt::Display for TermImpact {
 
 /// An iterator on term impacts
 pub type TermImpactIterator<'a> = Box<dyn Iterator<Item = TermImpact> + 'a + Send>;
+
+/// A search function
+pub type SearchFn = fn(
+    index: &dyn BlockTermImpactIndex,
+    query: &HashMap<TermIndex, ImpactValue>,
+    top_k: usize,
+) -> Vec<ScoredDocument>;

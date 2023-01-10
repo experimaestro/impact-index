@@ -10,8 +10,10 @@ use crate::base::{DocId, ImpactValue, TermIndex};
 use crate::index::sparse::builder::{
     load_forward_index, SparseBuilderIndex, SparseBuilderIndexTrait,
 };
+use crate::index::sparse::maxscore::search_maxscore;
 use crate::index::sparse::{
     builder::Indexer as SparseIndexer, wand::search_wand, TermImpactIterator,
+    SearchFn
 };
 
 use numpy::PyArray1;
@@ -74,22 +76,13 @@ pub struct PySparseBuilderIndex {
     index: Arc<Mutex<SparseBuilderIndex>>,
 }
 
-#[pymethods]
 impl PySparseBuilderIndex {
-    fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
-        let index = self.index.lock().unwrap();
-        Ok(SparseSparseBuilderIndexIterator {
-            index: self.index.clone(),
-            // TODO: ugly but works since index is there
-            iter: unsafe { extend_lifetime(index.iter(term)) },
-        })
-    }
-
-    fn search(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+    fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
         let mut index = self.index.lock().unwrap();
 
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
-        let results = search_wand(index.deref_mut(), &query, top_k);
+        // let results = search_wand(index.deref_mut(), &query, top_k);
+        let results = search_maxscore(index.deref_mut(), &query, top_k);
 
         let list = Python::with_gil(|py| {
             let v: Vec<PyScoredDocument> = results
@@ -103,6 +96,31 @@ impl PySparseBuilderIndex {
         });
 
         Ok(list)
+    }
+}
+
+#[pymethods]
+impl PySparseBuilderIndex {
+    fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
+        let index = self.index.lock().unwrap();
+        Ok(SparseSparseBuilderIndexIterator {
+            index: self.index.clone(),
+            // TODO: ugly but works since index is there
+            iter: unsafe { extend_lifetime(index.iter(term)) },
+        })
+    }
+
+    /// Deprecated
+    fn search(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        self._search(py_query, top_k, search_wand)
+    }
+
+    fn search_wand(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        self._search(py_query, top_k, search_wand)
+    }
+
+    fn search_maxscore(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        self._search(py_query, top_k, search_maxscore)
     }
 
     #[staticmethod]

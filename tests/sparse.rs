@@ -3,6 +3,7 @@ use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
+        SearchFn,
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
         index::BlockTermImpactIndex,
         maxscore::search_maxscore,
@@ -198,12 +199,6 @@ fn test_heap() {
 
     vec_compare(&observed, &expected);
 }
-
-type SearchFn = fn(
-    index: &dyn BlockTermImpactIndex,
-    query: &HashMap<TermIndex, ImpactValue>,
-    top_k: usize,
-) -> Vec<ScoredDocument>;
 
 #[rstest]
 #[case(true, 100, 1000, 50., 50, 10, None)]
