@@ -320,7 +320,7 @@ pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     info: Option<&'a TermIndexPageInformation>,
     mmap: Mmap,
-    position: usize,
+    impacts: Option<Vec<TermImpact>>,
     index: usize,
     term_ix: TermIndex,
 }
@@ -340,17 +340,12 @@ impl<'a> SparseBuilderIndexIterator<'a> {
             info_iter: iter,
             mmap: unsafe {
                 MmapOptions::new()
-                    .populate()
                     .map(&index.file)
                     .expect("Cannot create a memory map")
             },
 
             // Impact vector (None if not loaded)
-            position: if let Some(_info) = info {
-                _info.docid_position as usize
-            } else {
-                0
-            },
+            impacts: None,
 
             /// The current impact index
             index: 0,
@@ -375,17 +370,37 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
             // Go to the next block
             self.info = self.info_iter.next();
-            self.index = 0;
-            self.position = if let Some(info) = self.info {
-                info.docid_position as usize
-            } else {
-                0
-            };
+            self.impacts = None
         }
         false
     }
 
-    const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
+    fn read_block(&mut self, info: &TermIndexPageInformation) {
+        // self.mmap
+        //     .seek(std::io::SeekFrom::Start(info.docid_position))
+        //     .expect("Erreur de lecture");
+
+        const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
+        let start = info.docid_position as usize;
+        let end = (info.docid_position as usize + info.length * RECORD_SIZE);
+        let mut buffer = &self.mmap[start..end];
+
+        self.index = 0;
+        let mut impacts = Vec::new();
+        for _ in 0..info.length {
+            let docid: DocId = buffer.read_u64::<BigEndian>().expect(&format!(
+                "Erreur de lecture at position {}",
+                info.docid_position
+            ));
+            let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
+            impacts.push(TermImpact {
+                docid: docid,
+                value: value,
+            })
+        }
+
+        self.impacts = Some(impacts)
+    }
 }
 
 impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
@@ -393,31 +408,27 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 
     /// Iterate to the next doc id
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some(info) = self.info {
-            if self.index >= info.length {
-                // Read next info
+        // Load impacts from block if not done yet
+        if let Some(impacts) = &self.impacts {
+            if self.index >= impacts.len() {
                 self.info = self.info_iter.next();
-                if let Some(new_info) = self.info {
-                    self.position = new_info.docid_position as usize;
+                if let Some(info) = self.info {
+                    self.read_block(info);
                 } else {
                     return None;
                 }
             }
         } else {
-            return None;
+            if let Some(info) = self.info {
+                self.read_block(info)
+            } else {
+                return None;
+            }
         }
 
-        let mut buffer = &self.mmap[self.position..(self.position + Self::RECORD_SIZE)];
-        let docid: DocId = buffer.read_u64::<BigEndian>().expect("Erreur de lecture");
-        let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
-
+        let index = self.index;
         self.index += 1;
-        self.position += Self::RECORD_SIZE;
-
-        return Some(TermImpact {
-            docid: docid,
-            value: value,
-        });
+        return Some(self.impacts.as_ref().expect("should not be null")[index]);
     }
 }
 
