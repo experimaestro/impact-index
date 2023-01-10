@@ -2,33 +2,32 @@
 
 use std::{
     fs::File,
-    io::{Seek, Read, Write},
+    io::{Read, Seek, Write},
     path::Path,
 };
 
 use super::index::BlockTermImpactIndex;
 use crate::base::{DocId, ImpactValue};
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use sucds::{EliasFanoBuilder, Searial};
 
-// 
+//
 // ---- Compression ---
-// 
+//
 pub trait Compressor<T> {
     fn write(&self, writer: &mut dyn Write, values: &[T]);
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=T>>;
+    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T>>;
 }
 
 #[typetag::serde(tag = "type")]
-pub trait DocIdCompressor : Compressor<usize> {}
+pub trait DocIdCompressor: Compressor<usize> {}
 
 #[typetag::serde(tag = "type")]
-pub trait ValueCompressor : Compressor<ImpactValue> {}
+pub trait ValueCompressor: Compressor<ImpactValue> {}
 
-
-// 
+//
 // ---- Compressed index global information  ---
-// 
+//
 
 #[derive(Serialize, Deserialize)]
 pub struct CompressedBlockInformation {
@@ -56,7 +55,6 @@ pub struct CompressedTermIndexInformation {
     pub length: usize,
 }
 
-
 /// Global information on the index structure
 #[derive(Serialize, Deserialize)]
 pub struct CompressedIndexInformation {
@@ -66,7 +64,10 @@ pub struct CompressedIndexInformation {
 }
 
 impl BlockTermImpactIndex for CompressedIndexInformation {
-    fn iterator(&self, term_ix: crate::base::TermIndex) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
+    fn iterator(
+        &self,
+        term_ix: crate::base::TermIndex,
+    ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         // TODO: Iterate over compressed index information
         todo!()
     }
@@ -76,12 +77,10 @@ impl BlockTermImpactIndex for CompressedIndexInformation {
     }
 }
 
-
-
 /// Compress the impact values
-/// 
+///
 /// # Arguments
-/// 
+///
 /// - max_block_size: maximum number of records per block
 pub fn compress(
     path: &Path,
@@ -107,14 +106,14 @@ pub fn compress(
         .expect("Could not create the document IDs file");
 
     // Global information
-    let mut information = CompressedIndexInformation { 
+    let mut information = CompressedIndexInformation {
         terms: Vec::new(),
         doc_ids_compressor: doc_ids_compressor,
-        values_compressor: values_compressor
+        values_compressor: values_compressor,
     };
     let value_position = 0;
     let docid_position = 0;
-    
+
     // Iterate over terms
     for term_ix in 0..index.length() {
         // Read everything
@@ -127,7 +126,7 @@ pub fn compress(
             max_doc_id: 0,
             length: 0,
         };
-        
+
         while flag {
             // Read up to max_block_size records
             let mut impacts = Vec::new();
@@ -140,11 +139,15 @@ pub fn compress(
                     flag = true;
                     break;
                 }
-            }   
+            }
 
             // Write
-            information.doc_ids_compressor.write(&mut value_writer, &docids);
-            information.values_compressor.write(&mut docid_writer, &impacts);
+            information
+                .doc_ids_compressor
+                .write(&mut value_writer, &docids);
+            information
+                .values_compressor
+                .write(&mut docid_writer, &impacts);
 
             // Add information
             let new_value_position = value_writer.stream_position()?;
@@ -153,12 +156,20 @@ pub fn compress(
                 docid_position_range: (docid_position, new_docid_position),
                 value_position_range: (value_position, new_value_position),
                 length: impacts.len(),
-                max_value: impacts.iter().fold(0f32, |cur, x| { cur.max(*x) }),
-                max_doc_id: docids.iter().fold(0 as usize, |cur, x| -> usize { cur.max(*x) }).try_into().unwrap()
+                max_value: impacts.iter().fold(0f32, |cur, x| cur.max(*x)),
+                max_doc_id: docids
+                    .iter()
+                    .fold(0 as usize, |cur, x| -> usize { cur.max(*x) })
+                    .try_into()
+                    .unwrap(),
             };
 
-            term_information.max_value = term_information.max_value.max(block_term_information.max_value);
-            term_information.max_doc_id = term_information.max_doc_id.max(block_term_information.max_doc_id);
+            term_information.max_value = term_information
+                .max_value
+                .max(block_term_information.max_value);
+            term_information.max_doc_id = term_information
+                .max_doc_id
+                .max(block_term_information.max_doc_id);
             term_information.length += block_term_information.length;
             term_information.pages.push(block_term_information);
         }
@@ -174,7 +185,8 @@ pub fn compress(
         .open(info_path)
         .expect("Error while creating file");
 
-    ciborium::ser::into_writer(&information, info_file).expect("Error saving compressed term index information");
+    ciborium::ser::into_writer(&information, info_file)
+        .expect("Error saving compressed term index information");
 
     Ok(())
 }
@@ -191,22 +203,19 @@ pub fn load_compressed_index(path: &Path) -> CompressedIndexInformation {
 
 // --- Elias Fano
 
-struct EliasFanoCompressor {
-}
+struct EliasFanoCompressor {}
 
 impl<'a> Compressor<usize> for EliasFanoCompressor {
     fn write(&self, writer: &mut dyn Write, values: &[usize]) {
         let max_value = *values.iter().max().unwrap();
 
-        let mut c = EliasFanoBuilder::new(max_value, values.len())
-                .expect("Error when building");
+        let mut c = EliasFanoBuilder::new(max_value, values.len()).expect("Error when building");
 
-        c.append(values)
-            .expect("Could not add a doc ID");
+        c.append(values).expect("Could not add a doc ID");
         c.build().serialize_into(writer).expect("Yoooo");
     }
 
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item=usize>> {
+    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize>> {
         todo!()
     }
 }

@@ -6,9 +6,9 @@ use serde::{Deserialize, Serialize};
 pub mod builder;
 pub mod compress;
 pub mod index;
+pub mod maxscore;
 pub mod sharding;
 pub mod wand;
-pub mod maxscore;
 
 /// Term impact = document ID + impact value
 #[derive(Serialize, Deserialize, Clone, Copy)]

@@ -57,7 +57,6 @@ impl IndexInformation {
     }
 }
 
-
 /// Generic trait for block-based term impact iterators
 pub trait BlockTermImpactIterator {
     /// Moves to the next document whose id is greater or equal than doc_id
@@ -98,7 +97,6 @@ pub trait BlockTermImpactIterator {
         }
     }
 }
-
 
 pub trait BlockTermImpactIndex {
     /// Returns an iterator for a given term

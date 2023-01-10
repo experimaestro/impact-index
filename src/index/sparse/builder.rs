@@ -1,3 +1,4 @@
+use memmap2::{Mmap, MmapOptions};
 use std::{
     cell::RefCell,
     fs::File,
@@ -10,8 +11,8 @@ use log::debug;
 use ndarray::{ArrayBase, Data, Ix1};
 
 use super::{
-    index::{IndexInformation, TermIndexPageInformation},
     index::{BlockTermImpactIndex, BlockTermImpactIterator},
+    index::{IndexInformation, TermIndexPageInformation},
     TermImpact, TermImpactIterator,
 };
 use crate::{
@@ -318,7 +319,7 @@ pub trait SparseBuilderIndexTrait<'a> {
 pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     info: Option<&'a TermIndexPageInformation>,
-    file: &'a File,
+    mmap: Mmap,
     impacts: Option<Vec<TermImpact>>,
     index: usize,
     term_ix: TermIndex,
@@ -337,7 +338,11 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         Self {
             info: info,
             info_iter: iter,
-            file: &index.file,
+            mmap: unsafe {
+                MmapOptions::new()
+                    .map(&index.file)
+                    .expect("Cannot create a memory map")
+            },
 
             // Impact vector (None if not loaded)
             impacts: None,
@@ -356,7 +361,10 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         // Check first if all right
         while let Some(info) = self.info {
             if info.max_doc_id >= min_doc_id {
-                debug!("For {}, {} >= {}", self.term_ix, info.max_doc_id, min_doc_id);
+                debug!(
+                    "For {}, {} >= {}",
+                    self.term_ix, info.max_doc_id, min_doc_id
+                );
                 return true;
             }
 
@@ -368,21 +376,23 @@ impl<'a> SparseBuilderIndexIterator<'a> {
     }
 
     fn read_block(&mut self, info: &TermIndexPageInformation) {
-        self.file
-            .seek(std::io::SeekFrom::Start(info.docid_position))
-            .expect("Erreur de lecture");
+        // self.mmap
+        //     .seek(std::io::SeekFrom::Start(info.docid_position))
+        //     .expect("Erreur de lecture");
+
+        const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
+        let start = info.docid_position as usize;
+        let end = (info.docid_position as usize + info.length * RECORD_SIZE);
+        let mut buffer = &self.mmap[start..end];
 
         self.index = 0;
         let mut impacts = Vec::new();
         for _ in 0..info.length {
-            let docid: DocId = self.file.read_u64::<BigEndian>().expect(&format!(
+            let docid: DocId = buffer.read_u64::<BigEndian>().expect(&format!(
                 "Erreur de lecture at position {}",
                 info.docid_position
             ));
-            let value: ImpactValue = self
-                .file
-                .read_f32::<BigEndian>()
-                .expect("Erreur de lecture");
+            let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
             impacts.push(TermImpact {
                 docid: docid,
                 value: value,
@@ -422,7 +432,7 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
     }
 }
 
-// --- Wand
+// --- Block index
 
 struct SparseBuilderBlockTermImpactIterator<'a> {
     iterator: RefCell<SparseBuilderIndexIterator<'a>>,
@@ -451,16 +461,24 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
     fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
         // Move to the block having at least one document greater that min_doc_id
         self.current_min_docid = Some(min_doc_id.max(
-            if let Some(impact) = self.current_value.get_mut() { impact.docid + 1 } else { 0 }
+            if let Some(impact) = self.current_value.get_mut() {
+                impact.docid + 1
+            } else {
+                0
+            },
         ));
         let min_doc_id = self.current_min_docid.expect("Should not be None");
 
         let ok = self.iterator.get_mut().move_iterator(min_doc_id);
 
-        if ! ok {
+        if !ok {
             debug!("[{}] End of iterator", self.iterator.get_mut().term_ix)
         } else {
-            debug!("[{}] We have a candidate for {}", self.iterator.get_mut().term_ix, min_doc_id)
+            debug!(
+                "[{}] We have a candidate for {}",
+                self.iterator.get_mut().term_ix,
+                min_doc_id
+            )
         }
         ok
     }
@@ -471,10 +489,14 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             let iterator = self.iterator.borrow();
             debug!("[{}] Searching for next {}", iterator.term_ix, min_docid);
         }
-        
+
         let mut current_value = self.current_value.borrow_mut();
 
-        if current_value.and_then(|x| Some(x.docid < min_docid)).or(Some(true)).unwrap() {
+        if current_value
+            .and_then(|x| Some(x.docid < min_docid))
+            .or(Some(true))
+            .unwrap()
+        {
             *current_value = None;
             assert!(current_value.is_none());
 
@@ -494,7 +516,12 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             }
         } else {
             let iterator = self.iterator.borrow();
-            debug!("[{}] Current value was good {} >= {}", iterator.term_ix, current_value.expect("").docid, min_docid);
+            debug!(
+                "[{}] Current value was good {} >= {}",
+                iterator.term_ix,
+                current_value.expect("").docid,
+                min_docid
+            );
         }
 
         return current_value.expect("No current value");

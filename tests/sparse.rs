@@ -1,3 +1,4 @@
+use log::debug;
 use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
@@ -8,7 +9,6 @@ use xpmir_rust::{
     },
     search::{ScoredDocument, TopScoredDocuments},
 };
-use log::debug;
 
 use helpers::documents::{create_document, document_vectors, TestDocument};
 
@@ -22,7 +22,6 @@ use std::{collections::HashMap, fmt::Display};
 fn init_logger() {
     let _ = env_logger::builder().is_test(true).try_init();
 }
-
 
 trait ApproxEq {
     fn approx_eq(&self, other: &Self, delta: f64) -> bool;
