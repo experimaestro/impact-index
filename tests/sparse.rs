@@ -3,12 +3,11 @@ use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
-        SearchFn,
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
         index::BlockTermImpactIndex,
         maxscore::search_maxscore,
         wand::search_wand,
-        TermImpact,
+        SearchFn, TermImpact,
     },
     search::{ScoredDocument, TopScoredDocuments},
 };

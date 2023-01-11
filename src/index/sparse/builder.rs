@@ -15,6 +15,7 @@ use super::{
     index::{IndexInformation, TermIndexPageInformation},
     TermImpact, TermImpactIterator,
 };
+use crate::utils::buffer::{Buffer, MemoryBuffer, MmapBuffer};
 use crate::{
     base::{BoxResult, DocId, ImpactValue, TermIndex},
     index::sparse::index::TermIndexInformation,
@@ -319,7 +320,7 @@ pub trait SparseBuilderIndexTrait<'a> {
 pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     info: Option<&'a TermIndexPageInformation>,
-    mmap: Mmap,
+    buffer: Box<dyn Buffer>,
     impacts: Option<Vec<TermImpact>>,
     index: usize,
     term_ix: TermIndex,
@@ -338,11 +339,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         Self {
             info: info,
             info_iter: iter,
-            mmap: unsafe {
-                MmapOptions::new()
-                    .map(&index.file)
-                    .expect("Cannot create a memory map")
-            },
+            buffer: Box::new(MmapBuffer::new(&index.file)),
 
             // Impact vector (None if not loaded)
             impacts: None,
@@ -375,29 +372,29 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         false
     }
 
+    const RECORD_SIZE: usize = std::mem::size_of::<DocId>() + std::mem::size_of::<ImpactValue>();
+
     fn read_block(&mut self, info: &TermIndexPageInformation) {
-        // self.mmap
-        //     .seek(std::io::SeekFrom::Start(info.docid_position))
-        //     .expect("Erreur de lecture");
-
-        const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
         let start = info.docid_position as usize;
-        let end = info.docid_position as usize + info.length * RECORD_SIZE;
-        let mut buffer = &self.mmap[start..end];
+        let end = info.docid_position as usize + info.length * Self::RECORD_SIZE;
+        self.slice = self.buffer[start..end];
 
-        self.index = 0;
-        let mut impacts = Vec::new();
-        for _ in 0..info.length {
-            let docid: DocId = buffer.read_u64::<BigEndian>().expect(&format!(
-                "Erreur de lecture at position {}",
-                info.docid_position
-            ));
-            let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
-            impacts.push(TermImpact {
-                docid: docid,
-                value: value,
-            })
-        }
+        //
+        // let mut buffer = &self.buffer[start..end];
+
+        // self.index = 0;
+        // let mut impacts = Vec::new();
+        // for _ in 0..info.length {
+        //     let docid: DocId = buffer.read_u64::<BigEndian>().expect(&format!(
+        //         "Erreur de lecture at position {}",
+        //         info.docid_position
+        //     ));
+        //     let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
+        //     impacts.push(TermImpact {
+        //         docid: docid,
+        //         value: value,
+        //     })
+        // }
 
         self.impacts = Some(impacts)
     }
