@@ -260,11 +260,7 @@ impl Indexer {
         let mut terms = Vec::new();
         std::mem::swap(&mut self.impacts.information.terms, &mut terms);
 
-        SparseBuilderIndex {
-            terms: terms,
-            // folder: folder,
-            file: file,
-        }
+        SparseBuilderIndex::new(terms, &file)
     }
 }
 
@@ -282,9 +278,21 @@ impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
 /// constructing the index
 pub struct SparseBuilderIndex {
     terms: Vec<TermIndexInformation>,
-    // folder: PathBuf,
-    /// postings.dat
-    file: File,
+    mmap: Mmap,
+}
+impl SparseBuilderIndex {
+    fn new(terms: Vec<TermIndexInformation>, file: &File) -> Self {
+        let mut mmap = unsafe {
+            MmapOptions::new()
+                .map(file)
+                .expect("Cannot create a memory map")
+        };
+
+        Self {
+            terms: terms,
+            mmap: mmap,
+        }
+    }
 }
 
 pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
@@ -303,11 +311,7 @@ pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
         .open(postings_path)
         .expect("Error while creating file");
 
-    SparseBuilderIndex {
-        terms: ti.terms,
-        // folder: path.to_path_buf(),
-        file,
-    }
+    SparseBuilderIndex::new(ti.terms, &file)
 }
 
 /// Forward Index trait
@@ -319,10 +323,10 @@ pub trait SparseBuilderIndexTrait<'a> {
 pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     info: Option<&'a TermIndexPageInformation>,
-    mmap: Mmap,
     impacts: Option<Vec<TermImpact>>,
     index: usize,
     term_ix: TermIndex,
+    sparse_index: &'a SparseBuilderIndex,
 }
 
 impl<'a> SparseBuilderIndexIterator<'a> {
@@ -338,11 +342,6 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         Self {
             info: info,
             info_iter: iter,
-            mmap: unsafe {
-                MmapOptions::new()
-                    .map(&index.file)
-                    .expect("Cannot create a memory map")
-            },
 
             // Impact vector (None if not loaded)
             impacts: None,
@@ -352,6 +351,8 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
             /// Just for information purpose
             term_ix: term_ix,
+
+            sparse_index: &index,
         }
     }
 
@@ -376,14 +377,10 @@ impl<'a> SparseBuilderIndexIterator<'a> {
     }
 
     fn read_block(&mut self, info: &TermIndexPageInformation) {
-        // self.mmap
-        //     .seek(std::io::SeekFrom::Start(info.docid_position))
-        //     .expect("Erreur de lecture");
-
         const RECORD_SIZE: usize = std::mem::size_of::<u64>() + std::mem::size_of::<f32>();
         let start = info.docid_position as usize;
         let end = info.docid_position as usize + info.length * RECORD_SIZE;
-        let mut buffer = &self.mmap[start..end];
+        let mut buffer = &self.sparse_index.mmap[start..end];
 
         self.index = 0;
         let mut impacts = Vec::new();
