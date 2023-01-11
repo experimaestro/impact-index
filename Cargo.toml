@@ -35,7 +35,6 @@ sucds = "0.5.0"
 log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_info"] }
 env_logger = "0.9.3"
 typetag = "0.2"
-memmap = "0.7.0"
 memmap2 = "0.5.8"
 
 [dev-dependencies]
