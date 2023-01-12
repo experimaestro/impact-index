@@ -1,9 +1,14 @@
-use std::{fs::File, ops::Deref};
+use std::fs::File;
 
 use memmap2::{Mmap, MmapOptions};
-use std::convert::AsRef;
 
-pub trait Buffer: Send + AsRef<[u8]> + Deref<Target=[u8]> {}
+pub struct Slice<'a> {
+    pub data: &'a [u8],
+}
+
+pub trait Buffer: Send + Sync {
+    fn slice(&'_ self, start: usize, end: usize) -> Slice<'_>;
+}
 
 pub struct MemoryBuffer {}
 
@@ -22,19 +27,10 @@ impl MmapBuffer {
     }
 }
 
-impl Buffer for MmapBuffer {}
-
-impl AsRef<[u8]> for MmapBuffer {
-    fn as_ref(&self) -> &[u8] {
-        todo!()
+impl Buffer for MmapBuffer {
+    fn slice(&'_ self, start: usize, end: usize) -> Slice<'_> {
+        Slice {
+            data: &self.mmap[start..end],
+        }
     }
-}
-
-impl Deref for MmapBuffer {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        todo!()
-    }
-    
 }

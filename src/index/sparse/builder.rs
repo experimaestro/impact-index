@@ -269,7 +269,7 @@ impl Indexer {
 /// constructing the index
 pub struct SparseBuilderIndex {
     terms: Vec<TermIndexInformation>,
-    buffer: Box<dyn Buffer + Sync + Send>,
+    buffer: Box<dyn Buffer>,
 }
 
 impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
@@ -379,24 +379,25 @@ impl<'a> SparseBuilderIndexIterator<'a> {
     fn read_block(&mut self, info: &TermIndexPageInformation) {
         let start = info.docid_position as usize;
         let end = info.docid_position as usize + info.length * Self::RECORD_SIZE;
-        self.slice = self.buffer[start..end];
 
-        //
-        // let mut buffer = &self.buffer[start..end];
+        let slice = &self.sparse_index.buffer.slice(start, end);
+        let mut data = slice.data;
 
-        // self.index = 0;
-        // let mut impacts = Vec::new();
-        // for _ in 0..info.length {
-        //     let docid: DocId = buffer.read_u64::<BigEndian>().expect(&format!(
-        //         "Erreur de lecture at position {}",
-        //         info.docid_position
-        //     ));
-        //     let value: ImpactValue = buffer.read_f32::<BigEndian>().expect("Erreur de lecture");
-        //     impacts.push(TermImpact {
-        //         docid: docid,
-        //         value: value,
-        //     })
-        // }
+        self.index = 0;
+        let mut impacts = Vec::new();
+        for _ in 0..info.length {
+            let docid: DocId = data.read_u64::<BigEndian>().expect(&format!(
+                "Erreur de lecture at position {}",
+                info.docid_position
+            ));
+            let value: ImpactValue = data
+                .read_f32::<BigEndian>()
+                .expect("Erreur de lecture");
+            impacts.push(TermImpact {
+                docid: docid,
+                value: value,
+            })
+        }
 
         self.impacts = Some(impacts)
     }
