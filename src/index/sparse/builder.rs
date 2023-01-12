@@ -261,12 +261,15 @@ impl Indexer {
         let mut terms = Vec::new();
         std::mem::swap(&mut self.impacts.information.terms, &mut terms);
 
-        SparseBuilderIndex {
-            terms: terms,
-            // folder: folder,
-            file: file,
-        }
+        SparseBuilderIndex::new(terms, &file)
     }
+}
+
+/// The forward index is the raw structure built while
+/// constructing the index
+pub struct SparseBuilderIndex {
+    terms: Vec<TermIndexInformation>,
+    buffer: Box<dyn Buffer + Sync + Send>,
 }
 
 impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
@@ -279,13 +282,13 @@ impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
     }
 }
 
-/// The forward index is the raw structure built while
-/// constructing the index
-pub struct SparseBuilderIndex {
-    terms: Vec<TermIndexInformation>,
-    // folder: PathBuf,
-    /// postings.dat
-    file: File,
+impl SparseBuilderIndex {
+    fn new(terms: Vec<TermIndexInformation>, file: &File) -> Self {
+        Self {
+            terms: terms,
+            buffer: Box::new(MmapBuffer::new(file)),
+        }
+    }
 }
 
 pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
@@ -304,11 +307,7 @@ pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
         .open(postings_path)
         .expect("Error while creating file");
 
-    SparseBuilderIndex {
-        terms: ti.terms,
-        // folder: path.to_path_buf(),
-        file,
-    }
+    SparseBuilderIndex::new(ti.terms, &file)
 }
 
 /// Forward Index trait
@@ -320,10 +319,12 @@ pub trait SparseBuilderIndexTrait<'a> {
 pub struct SparseBuilderIndexIterator<'a> {
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
     info: Option<&'a TermIndexPageInformation>,
-    buffer: Box<dyn Buffer>,
     impacts: Option<Vec<TermImpact>>,
     index: usize,
+    /// Term index (for reference)
     term_ix: TermIndex,
+    /// Our sparse index
+    sparse_index: &'a SparseBuilderIndex,
 }
 
 impl<'a> SparseBuilderIndexIterator<'a> {
@@ -339,7 +340,6 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         Self {
             info: info,
             info_iter: iter,
-            buffer: Box::new(MmapBuffer::new(&index.file)),
 
             // Impact vector (None if not loaded)
             impacts: None,
@@ -349,6 +349,8 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
             /// Just for information purpose
             term_ix: term_ix,
+
+            sparse_index: &index,
         }
     }
 

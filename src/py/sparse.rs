@@ -80,8 +80,7 @@ impl PySparseBuilderIndex {
         let mut index = self.index.lock().unwrap();
 
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
-        // let results = search_wand(index.deref_mut(), &query, top_k);
-        let results = search_maxscore(index.deref_mut(), &query, top_k);
+        let results = search_fn(index.deref_mut(), &query, top_k);
 
         let list = Python::with_gil(|py| {
             let v: Vec<PyScoredDocument> = results
