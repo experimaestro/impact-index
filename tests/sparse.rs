@@ -132,7 +132,7 @@ impl TestIndex {
 #[test]
 fn test_index() {
     let mut data = TestIndex::new(100, 1000, 5., 10, None);
-    let index = data.indexer.to_forward_index();
+    let index = data.indexer.to_forward_index(true);
 
     eprintln!("Index built in {}", &data.dir.path().display());
     // Verify the index
@@ -225,9 +225,9 @@ fn test_search(
         seed,
     );
     let mut index = if in_memory {
-        data.indexer.to_forward_index()
+        data.indexer.to_forward_index(true)
     } else {
-        load_forward_index(data.dir.path())
+        load_forward_index(data.dir.path(), true)
     };
 
     // Builds a query from a document
