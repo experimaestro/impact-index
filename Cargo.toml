@@ -1,6 +1,6 @@
 [package]
 name = "xpmir-rust"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2021"
 authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
 license = "GPL-2.0-or-later"
