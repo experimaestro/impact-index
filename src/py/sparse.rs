@@ -12,8 +12,7 @@ use crate::index::sparse::builder::{
 };
 use crate::index::sparse::maxscore::search_maxscore;
 use crate::index::sparse::{
-    builder::Indexer as SparseIndexer, wand::search_wand, TermImpactIterator,
-    SearchFn
+    builder::Indexer as SparseIndexer, wand::search_wand, SearchFn, TermImpactIterator,
 };
 
 use numpy::PyArray1;
