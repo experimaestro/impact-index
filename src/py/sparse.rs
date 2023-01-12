@@ -122,9 +122,9 @@ impl PySparseBuilderIndex {
     }
 
     #[staticmethod]
-    fn load(folder: &str) -> PyResult<Self> {
+    fn load(folder: &str, in_memory: bool) -> PyResult<Self> {
         Ok(PySparseBuilderIndex {
-            index: Arc::new(Mutex::new(load_forward_index(Path::new(folder)))),
+            index: Arc::new(Mutex::new(load_forward_index(Path::new(folder), in_memory))),
         })
     }
 }
@@ -162,10 +162,10 @@ impl PySparseIndexer {
         Ok(())
     }
 
-    fn build(&mut self) -> PyResult<PySparseBuilderIndex> {
+    fn build(&mut self, in_memory: bool) -> PyResult<PySparseBuilderIndex> {
         let mut indexer = self.indexer.lock().unwrap();
         indexer.build().expect("Error while building index");
-        let index = indexer.to_forward_index();
+        let index = indexer.to_forward_index(in_memory);
         Ok(PySparseBuilderIndex {
             index: Arc::new(Mutex::new(index)),
         })

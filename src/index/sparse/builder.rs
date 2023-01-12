@@ -244,24 +244,14 @@ impl Indexer {
     /**
      * Get a forward index
      */
-    pub fn to_forward_index(&mut self) -> SparseBuilderIndex {
+    pub fn to_forward_index(&mut self, in_memory: bool) -> SparseBuilderIndex {
         assert!(self.built, "Index is not built");
         assert!(
             self.impacts.information.terms.len() > 0,
             "Index has already been consumed into a forward index"
         );
 
-        let folder = self.impacts.folder.to_path_buf();
-        let path = folder.as_path().join(format!("postings.dat"));
-        let file = File::options()
-            .read(true)
-            .open(path)
-            .expect("Error while creating file");
-
-        let mut terms = Vec::new();
-        std::mem::swap(&mut self.impacts.information.terms, &mut terms);
-
-        SparseBuilderIndex::new(terms, &file)
+        load_forward_index(self.impacts.folder.as_path(), in_memory)
     }
 }
 
@@ -283,15 +273,19 @@ impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
 }
 
 impl SparseBuilderIndex {
-    fn new(terms: Vec<TermIndexInformation>, file: &File) -> Self {
+    fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
         Self {
             terms: terms,
-            buffer: Box::new(MmapBuffer::new(file)),
+            buffer: if in_memory {
+                Box::new(MemoryBuffer::new(path))
+            } else {
+                Box::new(MmapBuffer::new(path))
+            },
         }
     }
 }
 
-pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
+pub fn load_forward_index(path: &Path, in_memory: bool) -> SparseBuilderIndex {
     let info_path = path.join(format!("information.cbor"));
     let info_file = File::options()
         .read(true)
@@ -302,12 +296,8 @@ pub fn load_forward_index(path: &Path) -> SparseBuilderIndex {
         ciborium::de::from_reader(info_file).expect("Error loading term index information");
 
     let postings_path = path.join(format!("postings.dat"));
-    let file = File::options()
-        .read(true)
-        .open(postings_path)
-        .expect("Error while creating file");
 
-    SparseBuilderIndex::new(ti.terms, &file)
+    SparseBuilderIndex::new(ti.terms, &postings_path, in_memory)
 }
 
 /// Forward Index trait
@@ -390,9 +380,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
                 "Erreur de lecture at position {}",
                 info.docid_position
             ));
-            let value: ImpactValue = data
-                .read_f32::<BigEndian>()
-                .expect("Erreur de lecture");
+            let value: ImpactValue = data.read_f32::<BigEndian>().expect("Erreur de lecture");
             impacts.push(TermImpact {
                 docid: docid,
                 value: value,
