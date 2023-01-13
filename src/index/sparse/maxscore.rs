@@ -68,7 +68,7 @@ pub fn search_maxscore<'a>(
     // --- Initialize the structures
 
     let mut results = TopScoredDocuments::new(top_k);
-    let mut iterators = Vec::new();
+    let mut active = Vec::new();
     let mut theta: f64;
 
     for (&ix, &weight) in query.iter() {
@@ -88,31 +88,28 @@ pub fn search_maxscore<'a>(
         };
 
         if wrapper.next() {
-            iterators.push(wrapper);
+            active.push(wrapper);
         }
     }
 
     // Sort iterators
-    iterators.sort_by(|a, b| b.iterator.max_value().total_cmp(&a.iterator.max_value()));
+    active.sort_by(|a, b| b.iterator.max_value().total_cmp(&a.iterator.max_value()));
+    assert!(active[0].iterator.max_value() >= active.last().expect("").iterator.max_value());
 
-    let mut active = HashSet::<usize>::new();
-    for i in 0..iterators.len() {
-        active.insert(i);
-    }
 
-    let mut passive = HashSet::<usize>::new();
+    let mut passive = Vec::<MaxScoreTermIterator>::new();
     let mut sum_pass = 0.;
 
     while !&active.is_empty() {
         // select next document, match all cursors
         let candidate: DocId = (&active).iter().fold(DocId::MAX as DocId, |cur, t| {
-            cur.min(iterators[*t].impact.docid)
+            cur.min(t.impact.docid)
         });
 
         // score document
         let mut score = 0f64;
-        passive.retain(|t| 
-            if let Some(impact) = iterators[*t].seek_gek(candidate) {
+        passive.retain_mut(|t| 
+            if let Some(impact) = t.seek_gek(candidate) {
                 if candidate == impact.docid {
                     score += impact.value as f64;
                 }
@@ -122,10 +119,10 @@ pub fn search_maxscore<'a>(
             }
         );
 
-        active.retain(|t| {
-            if iterators[*t].impact.docid == candidate {
-                score += iterators[*t].impact.value as f64;
-                if !iterators[*t].next() {
+        active.retain_mut(|t| {
+            if t.impact.docid == candidate {
+                score += t.impact.value as f64;
+                if !t.next() {
                     return false;
                 }
             }
@@ -137,13 +134,11 @@ pub fn search_maxscore<'a>(
         theta = results.add(candidate, score as f32).max(0.) as f64;
 
         // try to expand passive set
-        let maybe_y = active.iter().reduce(|i, j| i.min(j)).and_then(|x| Some(*x));
 
-        if let Some(y) = maybe_y {
-            if iterators[y].max_value + sum_pass < theta {
-                active.remove(&y);
-                passive.insert(y);
-                sum_pass += iterators[y].max_value;
+        if let Some(t) = active.last() {
+            if t.max_value + sum_pass < theta {
+                sum_pass += t.max_value;
+                passive.push(active.pop().expect("Cannot be none"));
             }
         }
     }
