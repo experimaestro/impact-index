@@ -1,4 +1,3 @@
-use memmap2::{Mmap, MmapOptions};
 use std::{
     cell::RefCell,
     fs::File,
@@ -107,7 +106,6 @@ impl TermsImpacts {
         if p_info.information.max_value < value {
             p_info.information.max_value = value;
         }
-        p_info.information.max_doc_id = docid;
 
         // Update the term information
         let info = &mut self.information.terms[term_ix];
@@ -151,6 +149,8 @@ impl TermsImpacts {
             PostingsInformation::new(),
         );
         postings_info.information.docid_position = position;
+        // postings_info.information.min_doc_id = postings_info.postings[0].docid;
+        postings_info.information.max_doc_id = postings_info.postings.last().expect("should not be empty").docid;
         postings_info.information.value_position = position; // will be ignored anyways
         postings_info.information.length = len_postings;
         self.information.terms[term_ix]
@@ -347,11 +347,11 @@ impl<'a> SparseBuilderIndexIterator<'a> {
     /// Move the iterator to the first block where a document of
     /// at least `min_doc_id` is present
     fn move_iterator(&mut self, min_doc_id: DocId) -> bool {
-        // Check first if all right
+        // Loop until the condition is met
         while let Some(info) = self.info {
             if info.max_doc_id >= min_doc_id {
                 debug!(
-                    "For {}, {} >= {}",
+                    "[{}] max(doc_id) = {} >= {}",
                     self.term_ix, info.max_doc_id, min_doc_id
                 );
                 return true;
@@ -447,7 +447,7 @@ impl<'a> SparseBuilderBlockTermImpactIterator<'a> {
 
 impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
     fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
-        // Move to the block having at least one document greater that min_doc_id
+        // Sets the current minimum document ID
         self.current_min_docid = Some(min_doc_id.max(
             if let Some(impact) = self.current_value.get_mut() {
                 impact.docid + 1
@@ -456,14 +456,15 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             },
         ));
         let min_doc_id = self.current_min_docid.expect("Should not be None");
-
+        
+        // Move to the block having at least one document greater that min_doc_id
         let ok = self.iterator.get_mut().move_iterator(min_doc_id);
 
         if !ok {
             debug!("[{}] End of iterator", self.iterator.get_mut().term_ix)
         } else {
             debug!(
-                "[{}] We have a candidate for {}",
+                "[{}] We have a candidate for doc_id >= {}",
                 self.iterator.get_mut().term_ix,
                 min_doc_id
             )
@@ -471,6 +472,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
         ok
     }
 
+    /// Returns the current document ID
     fn current(&self) -> TermImpact {
         let min_docid = self.current_min_docid.expect("Should not be null");
         {
@@ -526,6 +528,14 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             .expect("Iterator was over")
             .max_doc_id
     }
+
+    // fn min_block_doc_id(&self) -> DocId {
+    //     self.iterator
+    //         .borrow()
+    //         .info
+    //         .expect("Iterator was over")
+    //         .min_doc_id
+    // }
 
     fn max_block_value(&self) -> ImpactValue {
         self.iterator

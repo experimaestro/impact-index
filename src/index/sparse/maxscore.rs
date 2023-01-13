@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use log::debug;
+
 use crate::{
     base::{DocId, ImpactValue},
     search::{ScoredDocument, TopScoredDocuments},
@@ -16,14 +18,16 @@ use super::{
 
 struct MaxScoreTermIterator<'a> {
     iterator: Box<dyn BlockTermImpactIterator + 'a>,
+    term_index: usize,
     query_weight: f32,
     max_value: f64,
 
     // Impact with value query weight taken into account
-    impact: TermImpact,
+    impact: TermImpact
 }
 
 impl MaxScoreTermIterator<'_> {
+    /// Call iterator's next
     fn next(&mut self) -> bool {
         if let Some(mut impact) = self.iterator.next() {
             impact.value *= self.query_weight;
@@ -33,14 +37,22 @@ impl MaxScoreTermIterator<'_> {
             false
         }
     }
-    fn seek_gek(&mut self, doc_id: DocId) -> bool {
-        if self.impact.docid >= doc_id {
-            return true;
+
+
+    fn seek_gek(&'_ mut self, doc_id: DocId) -> Option<&'_ TermImpact> {
+        debug!("[term {}] Searching for doc id >= {}", self.term_index, doc_id);
+        if doc_id <= self.impact.docid {
+            return Some(&self.impact);
         }
+
         if !self.iterator.next_min_doc_id(doc_id) {
-            return false;
+            return None
         }
-        self.next()
+        let mut impact = self.iterator.current();
+        impact.value *= self.query_weight;
+        self.impact = impact;
+        debug!("[term {}] Current impact is {} / {}", self.term_index, self.impact, doc_id);
+        Some(&self.impact)
     }
 }
 
@@ -67,6 +79,7 @@ pub fn search_maxscore<'a>(
         let mut wrapper = MaxScoreTermIterator {
             iterator: iterator,
             query_weight: weight,
+            term_index: ix,
             impact: TermImpact {
                 value: 0.,
                 docid: 0,
@@ -96,15 +109,18 @@ pub fn search_maxscore<'a>(
             cur.min(iterators[*t].impact.docid)
         });
 
-        passive.retain(|t| iterators[*t].seek_gek(candidate));
-
         // score document
         let mut score = 0f64;
-        for t in &passive {
-            if iterators[*t].impact.docid == candidate {
-                score += iterators[*t].impact.value as f64;
+        passive.retain(|t| 
+            if let Some(impact) = iterators[*t].seek_gek(candidate) {
+                if candidate == impact.docid {
+                    score += impact.value as f64;
+                }
+                true
+            } else {
+                false
             }
-        }
+        );
 
         active.retain(|t| {
             if iterators[*t].impact.docid == candidate {

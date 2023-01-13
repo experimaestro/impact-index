@@ -22,6 +22,9 @@ pub struct TermIndexPageInformation {
 
     /// Maximum document ID for this page
     pub max_doc_id: DocId,
+
+    // /// Minimum document ID for this page
+    // pub min_doc_id: DocId
 }
 
 impl TermIndexPageInformation {
@@ -32,6 +35,7 @@ impl TermIndexPageInformation {
             length: 0,
             max_value: 0.,
             max_doc_id: 0,
+            // min_doc_id: 0
         }
     }
 }
@@ -70,13 +74,18 @@ pub trait BlockTermImpactIterator {
     /// Returns the term maximum impact
     fn max_value(&self) -> ImpactValue;
 
-    /// Returns the maximum document ID
+    /// Returns the maximum and minimum document ID
     fn max_doc_id(&self) -> DocId;
 
     /// Max block document ID (by default, returns the maximum over all impacts)
     fn max_block_value(&self) -> ImpactValue {
         // If just one block...
         self.max_value()
+    }
+
+    /// Returns the minimum document ID for this block
+    fn min_block_doc_id(&self) -> DocId {
+        0
     }
 
     /// Max block document ID (by default, returns the maximum over all impacts)

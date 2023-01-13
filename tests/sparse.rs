@@ -4,7 +4,6 @@ use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
-        index::BlockTermImpactIndex,
         maxscore::search_maxscore,
         wand::search_wand,
         SearchFn, TermImpact,

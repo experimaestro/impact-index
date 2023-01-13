@@ -47,7 +47,7 @@ pub struct MmapBuffer {
 
 impl MmapBuffer {
     pub fn new(path: &PathBuf) -> Self {
-        let mut file = File::options()
+        let file = File::options()
             .read(true)
             .open(path)
             .expect("Error while reading posting file");
