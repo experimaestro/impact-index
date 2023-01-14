@@ -8,7 +8,7 @@ use rand::thread_rng;
 use temp_dir::TempDir;
 use xpmir_rust::index::sparse::{builder::Indexer, wand::search_wand, SearchFn, maxscore::search_maxscore};
 
-fn benchmark(c: &mut Criterion, search_fn: SearchFn) {
+fn benchmark(c: &mut Criterion, name: &str, search_fn: SearchFn) {
     let mut rng = thread_rng();
 
     // Create the index
@@ -45,14 +45,14 @@ fn benchmark(c: &mut Criterion, search_fn: SearchFn) {
 
     let query = HashMap::from([(0, 1.2), (1, 2.3), (2, 3.2), (3, 1.2), (4, 0.7), (5, 2.3)]);
 
-    c.bench_function("wand", |b| b.iter(|| search_fn(&index, &query, 1000)));
+    c.bench_function(name, |b| b.iter(|| search_fn(&index, &query, 1000)));
 }
 
 fn benchmark_maxscore(c: &mut Criterion) {
-    benchmark(c, search_maxscore)
+    benchmark(c, "max_score", search_maxscore)
 }
 fn benchmark_wand(c: &mut Criterion) {
-    benchmark(c, search_wand)
+    benchmark(c, "wand", search_wand)
 }
 
 criterion_group! {
