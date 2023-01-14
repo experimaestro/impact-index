@@ -4,7 +4,6 @@ use std::{
     io::{Seek, Write},
     path::{Path, PathBuf},
 };
-use self_cell::self_cell;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
@@ -321,21 +320,6 @@ pub trait SparseBuilderIndexTrait<'a> {
 
 
 
-struct U8Ref<'a>(&'a [u8]);
-
-self_cell!(
-    struct SlicePtrHolder<'a> {
-        owner: Box<dyn Slice + 'a>,
-
-        #[covariant]
-        dependent: U8Ref,
-    }
-);
-fn create_slice_ptr_holder<'a>(slice: Box<dyn Slice + 'a>) -> SlicePtrHolder<'a> {
-    SlicePtrHolder::new(slice, |slice| U8Ref(slice.data()))
-}
-
-
 
 pub struct SparseBuilderIndexIterator<'a>  {
     /// Iterator over page information
@@ -345,7 +329,7 @@ pub struct SparseBuilderIndexIterator<'a>  {
     info: Option<&'a TermIndexPageInformation>,
 
     /// Current slice
-    slice: Option<SlicePtrHolder<'a>>,
+    slice: Option<Box<dyn Slice + 'a>>,
 
     index: usize,
     /// Term index (for reference)
@@ -395,15 +379,20 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         while let Some(info) = self.info {
             if info.max_doc_id >= min_doc_id {
                 debug!(
-                    "[{}] max(doc_id) = {} >= {}",
+                    "[{}] Moving iterator OK - max(doc_id) = {} >= {}",
                     self.term_ix, info.max_doc_id, min_doc_id
                 );
                 return true;
             }
 
             // Go to the next block
-            self.info = self.info_iter.next();
-            self.slice = None
+            self.next_block();
+
+            if let Some(info) = self.info {
+                debug!("[{}] Read the next block (move): {}", self.term_ix, info);
+            } else {
+                debug!("[{}] EOF for blocks (move)", self.term_ix);
+            }
         }
         false
     }
@@ -415,9 +404,15 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         let end = info.docid_position as usize + info.length * Self::RECORD_SIZE;
 
         let slice = self.sparse_index.buffer.slice(start, end);
-        self.slice = Some(create_slice_ptr_holder(slice));
+        self.slice = Some(slice);
     }
         
+    fn next_block(&mut self) {
+        self.info = self.info_iter.next();
+        self.slice = None;
+        self.index = 0;
+    }
+
 }
 
 impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
@@ -428,19 +423,24 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
         if let Some(info) = self.info {
             // We are over, load the next block
             if self.index >= info.length {
-                self.info = self.info_iter.next();
-                self.slice = None;
-                self.index = 0;
+                self.next_block();
+            }
+            if self.info.is_none() {
+                debug!("[{}] EOF for blocks", self.term_ix);
             }
         }
 
         if let Some(info) = self.info {
             if self.slice.is_none() {
-                self.read_block(info)
+                self.read_block(info);
+                debug!("[{}] Loading block data: {}", self.term_ix, info);
             }
             
-            let mut slice_ptr = self.slice.as_ref().expect("").borrow_dependent().0;
-
+            let data = self.slice.as_ref().expect("").as_ref().data();
+            let start = (self.index as usize) * Self::RECORD_SIZE;
+            let end = start + Self::RECORD_SIZE;
+            let mut slice_ptr = &data[start..end];
+    
             let docid: DocId = slice_ptr.read_u64::<BigEndian>().expect("Erreur de lecture");
             let value: ImpactValue = slice_ptr.read_f32::<BigEndian>().expect("Erreur de lecture");
             self.index += 1;
@@ -460,6 +460,7 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 struct SparseBuilderBlockTermImpactIterator<'a> {
     iterator: RefCell<SparseBuilderIndexIterator<'a>>,
     current_min_docid: Option<DocId>,
+    // We need a RefCell for method current()
     current_value: RefCell<Option<TermImpact>>,
     max_value: ImpactValue,
     max_doc_id: DocId,
@@ -522,11 +523,15 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             .or(Some(true))
             .unwrap()
         {
-            *current_value = None;
-            assert!(current_value.is_none());
-
             let mut iterator = self.iterator.borrow_mut();
-
+            debug!(
+                "[{}] Current DOC ID value is {}",
+                iterator.term_ix,
+                if let Some(cv) = current_value.as_ref() {cv.docid as i64} else {-1},
+            );
+            
+            
+            *current_value = None;
             while let Some(v) = iterator.next() {
                 if v.docid >= min_docid {
                     debug!("[{}] Returning {} ({})", iterator.term_ix, v.docid, v.value);
@@ -539,6 +544,8 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
                     iterator.term_ix, v.docid, v.value, min_docid
                 );
             }
+
+            assert!(current_value.is_some(), "Did not find current impact");
         } else {
             let iterator = self.iterator.borrow();
             debug!(

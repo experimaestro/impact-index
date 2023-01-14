@@ -152,7 +152,7 @@ fn test_index() {
                 term_ix
             ));
             info!("DocID {} vs {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
-            assert!(expected.docid == observed.docid, "DocID {} != {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
+            assert!(expected.docid == observed.docid, "Expected doc ID {}, got {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
             assert!(expected.value == observed.value);
         }
     }

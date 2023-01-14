@@ -1,5 +1,7 @@
 //! Main data structure used to describe an index
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::base::{DocId, ImpactValue, TermIndex};
@@ -37,6 +39,16 @@ impl TermIndexPageInformation {
             max_doc_id: 0,
             // min_doc_id: 0
         }
+    }
+}
+
+
+impl std::fmt::Display for TermIndexPageInformation {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "(pos: {}/{}, len: {}, max_v: {}, max_docid: {})", 
+            self.docid_position, self.value_position, self.length,
+            self.max_value, self.max_doc_id
+        )
     }
 }
 
