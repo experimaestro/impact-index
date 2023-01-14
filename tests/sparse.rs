@@ -1,4 +1,4 @@
-use log::debug;
+use log::{debug,info};
 use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
@@ -70,9 +70,14 @@ impl TestIndex {
         lambda_words: f32,
         max_words: usize,
         seed: Option<u64>,
+        in_memory_threshold: Option<usize>
     ) -> Self {
         let dir = TempDir::new().expect("Could not create temporary directory");
         let mut indexer = Indexer::new(&dir.path());
+
+        if let Some(v) = in_memory_threshold {
+            indexer.set_in_memory_threshold(v);
+        }
 
         let mut all_terms = HashMap::<TermIndex, Vec<TermImpact>>::new();
         let mut documents = Vec::<TestDocument>::new();
@@ -130,24 +135,24 @@ impl TestIndex {
 
 #[test]
 fn test_index() {
-    let mut data = TestIndex::new(100, 1000, 5., 10, None);
+    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
     let index = data.indexer.to_forward_index(true);
 
     eprintln!("Index built in {}", &data.dir.path().display());
     // Verify the index
     for term_ix in 0..data.vocabulary_size {
-        // eprintln!("Looking at term with index {}", term_ix);
         let mut iter = match data.all_terms.get(&term_ix) {
             Some(v) => Box::new(v.iter()),
             None => Box::new([].iter()),
         };
 
-        for observed in index.iter(term_ix) {
+        for (ix, observed) in index.iter(term_ix).enumerate() {
             let expected = iter.next().expect(&format!(
                 "The index has too many elements for term {}",
                 term_ix
             ));
-            assert!(expected.docid == observed.docid);
+            info!("DocID {} vs {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
+            assert!(expected.docid == observed.docid, "DocID {} != {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
             assert!(expected.value == observed.value);
         }
     }
@@ -222,6 +227,8 @@ fn test_search(
         lambda_words,
         max_words,
         seed,
+        // Use small pages
+        Some(10)
     );
     let mut index = if in_memory {
         data.indexer.to_forward_index(true)

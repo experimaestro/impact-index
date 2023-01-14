@@ -1,15 +1,26 @@
-use std::fs::File;
+use std::{fs::File};
 use std::io::Read;
 use std::path::PathBuf;
-
 use memmap2::{Mmap, MmapOptions};
 
-pub struct Slice<'a> {
-    pub data: &'a [u8],
+
+
+pub trait Slice: Send + Sync {
+    fn data(&'_ self) -> &'_ [u8];
+}
+
+struct MemorySlice<'a> {
+    _data: &'a [u8],
+}
+
+impl Slice for MemorySlice<'_> {
+    fn data(&'_ self) -> &'_ [u8] {
+        self._data
+    }
 }
 
 pub trait Buffer: Send + Sync {
-    fn slice(&'_ self, start: usize, end: usize) -> Slice<'_>;
+    fn slice(&'_ self, start: usize, end: usize) -> Box<dyn Slice + '_>;
 }
 
 /// Stores the data in memory
@@ -33,10 +44,10 @@ impl MemoryBuffer {
 }
 
 impl Buffer for MemoryBuffer {
-    fn slice(&'_ self, start: usize, end: usize) -> Slice<'_> {
-        Slice {
-            data: &self.data[start..end],
-        }
+    fn slice(&'_ self, start: usize, end: usize) -> Box<dyn Slice + '_> {
+        Box::new(MemorySlice {
+            _data: &self.data[start..end],
+        })
     }
 }
 
@@ -60,10 +71,25 @@ impl MmapBuffer {
     }
 }
 
+
+
+struct MmapSlice {
+    vector: Vec<u8>,
+}
+
+impl Slice for MmapSlice {
+    fn data(&'_ self) -> &'_ [u8] {
+        &self.vector
+    }
+}
+
 impl Buffer for MmapBuffer {
-    fn slice(&'_ self, start: usize, end: usize) -> Slice<'_> {
-        Slice {
-            data: &self.mmap[start..end],
-        }
+    fn slice(&'_ self, start: usize, end: usize) -> Box<dyn Slice> {
+        let vector = Vec::from_iter(self.mmap[start..end].iter().map(|t| *t));
+        let _data :  &[u8] =  &vector;
+
+        Box::new(MmapSlice {
+            vector: vector,
+        })
     }
 }

@@ -66,7 +66,7 @@ pub struct CompressedIndexInformation {
 impl BlockTermImpactIndex for CompressedIndexInformation {
     fn iterator(
         &self,
-        term_ix: crate::base::TermIndex,
+        _term_ix: crate::base::TermIndex,
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         // TODO: Iterate over compressed index information
         todo!()
@@ -215,7 +215,7 @@ impl<'a> Compressor<usize> for EliasFanoCompressor {
         c.build().serialize_into(writer).expect("Yoooo");
     }
 
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize>> {
+    fn read(&self, _reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize>> {
         todo!()
     }
 }

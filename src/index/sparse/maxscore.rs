@@ -1,6 +1,6 @@
 //! MaxScore algorithm
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use log::debug;
 

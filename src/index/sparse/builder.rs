@@ -4,6 +4,7 @@ use std::{
     io::{Seek, Write},
     path::{Path, PathBuf},
 };
+use self_cell::self_cell;
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use log::debug;
@@ -14,7 +15,7 @@ use super::{
     index::{IndexInformation, TermIndexPageInformation},
     TermImpact, TermImpactIterator,
 };
-use crate::utils::buffer::{Buffer, MemoryBuffer, MmapBuffer};
+use crate::utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice};
 use crate::{
     base::{BoxResult, DocId, ImpactValue, TermIndex},
     index::sparse::index::TermIndexInformation,
@@ -71,6 +72,10 @@ impl TermsImpacts {
             postings_information: Vec::new(),
             information: IndexInformation::new(),
         }
+    }
+
+    fn set_in_memory_threshold(&mut self, in_memory_threshold: usize) {
+        self.in_memory_threshold = in_memory_threshold;
     }
 
     /// Adds a term for a given document
@@ -192,6 +197,10 @@ impl Indexer {
         }
     }
 
+    pub fn set_in_memory_threshold(&mut self, in_memory_threshold: usize) {
+        self.impacts.set_in_memory_threshold(in_memory_threshold);
+    }
+
     pub fn add<S, T>(
         &mut self,
         docid: DocId,
@@ -258,7 +267,10 @@ impl Indexer {
 /// The forward index is the raw structure built while
 /// constructing the index
 pub struct SparseBuilderIndex {
+    /// Term information
     terms: Vec<TermIndexInformation>,
+
+    /// View on the postings
     buffer: Box<dyn Buffer>,
 }
 
@@ -306,19 +318,46 @@ pub trait SparseBuilderIndexTrait<'a> {
     fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a>;
 }
 
-pub struct SparseBuilderIndexIterator<'a> {
+
+
+
+struct U8Ref<'a>(&'a [u8]);
+
+self_cell!(
+    struct SlicePtrHolder<'a> {
+        owner: Box<dyn Slice + 'a>,
+
+        #[covariant]
+        dependent: U8Ref,
+    }
+);
+fn create_slice_ptr_holder<'a>(slice: Box<dyn Slice + 'a>) -> SlicePtrHolder<'a> {
+    SlicePtrHolder::new(slice, |slice| U8Ref(slice.data()))
+}
+
+
+
+pub struct SparseBuilderIndexIterator<'a>  {
+    /// Iterator over page information
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
+
+    /// Current info
     info: Option<&'a TermIndexPageInformation>,
-    impacts: Option<Vec<TermImpact>>,
+
+    /// Current slice
+    slice: Option<SlicePtrHolder<'a>>,
+
     index: usize,
     /// Term index (for reference)
     term_ix: TermIndex,
+    
+
     /// Our sparse index
     sparse_index: &'a SparseBuilderIndex,
 }
 
 impl<'a> SparseBuilderIndexIterator<'a> {
-    fn new<'b: 'a>(index: &'b SparseBuilderIndex, term_ix: TermIndex) -> Self {
+    fn new<'c: 'a>(index: &'c SparseBuilderIndex, term_ix: TermIndex) -> Self {
         let mut iter = if term_ix < index.terms.len() {
             Box::new(index.terms[term_ix].pages.iter())
         } else {
@@ -328,11 +367,17 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         let info = iter.next();
 
         Self {
-            info: info,
+            // The index
+            sparse_index: &index,
+            
+            // Iterator over term index page information
             info_iter: iter,
 
-            // Impact vector (None if not loaded)
-            impacts: None,
+            // Current term index page information
+            info: info,
+            
+            // Current memory slice (None if not loaded)
+            slice: None,
 
             /// The current impact index
             index: 0,
@@ -340,7 +385,6 @@ impl<'a> SparseBuilderIndexIterator<'a> {
             /// Just for information purpose
             term_ix: term_ix,
 
-            sparse_index: &index,
         }
     }
 
@@ -359,7 +403,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
             // Go to the next block
             self.info = self.info_iter.next();
-            self.impacts = None
+            self.slice = None
         }
         false
     }
@@ -370,25 +414,10 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         let start = info.docid_position as usize;
         let end = info.docid_position as usize + info.length * Self::RECORD_SIZE;
 
-        let slice = &self.sparse_index.buffer.slice(start, end);
-        let mut data = slice.data;
-
-        self.index = 0;
-        let mut impacts = Vec::new();
-        for _ in 0..info.length {
-            let docid: DocId = data.read_u64::<BigEndian>().expect(&format!(
-                "Erreur de lecture at position {}",
-                info.docid_position
-            ));
-            let value: ImpactValue = data.read_f32::<BigEndian>().expect("Erreur de lecture");
-            impacts.push(TermImpact {
-                docid: docid,
-                value: value,
-            })
-        }
-
-        self.impacts = Some(impacts)
+        let slice = self.sparse_index.buffer.slice(start, end);
+        self.slice = Some(create_slice_ptr_holder(slice));
     }
+        
 }
 
 impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
@@ -396,27 +425,33 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 
     /// Iterate to the next doc id
     fn next(&mut self) -> Option<Self::Item> {
-        // Load impacts from block if not done yet
-        if let Some(impacts) = &self.impacts {
-            if self.index >= impacts.len() {
+        if let Some(info) = self.info {
+            // We are over, load the next block
+            if self.index >= info.length {
                 self.info = self.info_iter.next();
-                if let Some(info) = self.info {
-                    self.read_block(info);
-                } else {
-                    return None;
-                }
-            }
-        } else {
-            if let Some(info) = self.info {
-                self.read_block(info)
-            } else {
-                return None;
+                self.slice = None;
+                self.index = 0;
             }
         }
 
-        let index = self.index;
-        self.index += 1;
-        return Some(self.impacts.as_ref().expect("should not be null")[index]);
+        if let Some(info) = self.info {
+            if self.slice.is_none() {
+                self.read_block(info)
+            }
+            
+            let mut slice_ptr = self.slice.as_ref().expect("").borrow_dependent().0;
+
+            let docid: DocId = slice_ptr.read_u64::<BigEndian>().expect("Erreur de lecture");
+            let value: ImpactValue = slice_ptr.read_f32::<BigEndian>().expect("Erreur de lecture");
+            self.index += 1;
+            Some(TermImpact {
+                docid: docid,
+                value: value,
+            })
+        } else {
+            None
+        }
+
     }
 }
 
@@ -555,7 +590,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
 }
 
 impl BlockTermImpactIndex for SparseBuilderIndex {
-    fn iterator(&self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
+    fn iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
 
