@@ -74,7 +74,7 @@ impl IndexInformation {
 }
 
 /// Generic trait for block-based term impact iterators
-pub trait BlockTermImpactIterator {
+pub trait BlockTermImpactIterator : Send {
     /// Moves to the next document whose id is greater or equal than doc_id
     /// The move can be "shallow", i.e. no need to actually hold a record:
     /// this is used by the BMW algorithm
