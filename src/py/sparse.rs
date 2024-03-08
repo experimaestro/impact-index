@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use std::ops::DerefMut;
+use std::future::IntoFuture;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
-
+use std::sync::Arc;
+use tokio::sync::Mutex;  
 use pyo3::{pyclass, pymethods, types::PyDict, PyObject, PyRef, PyResult};
-use pyo3::{IntoPy, Python};
+use pyo3::{IntoPy, PyAny, Python};
+use tokio::task;
 
 use crate::base::{DocId, ImpactValue, TermIndex};
 use crate::index::sparse::builder::{
@@ -16,16 +17,6 @@ use crate::index::sparse::{
 };
 
 use numpy::PyArray1;
-
-// #[pymethods]
-// impl SparseBuilderIndexIterator {
-//     fn __next__(mut slf: PyRefMut<Self>) -> IterNextOutput<usize, &'static str> {
-//         match self.next() {
-//             Some(value) => IterNextOutput::Yield(value),
-//             None => IterNextOutput::Return("Ended")
-//         }
-//     }
-// }
 
 #[pyclass(name = "TermImpact")]
 struct PyTermImpact {
@@ -49,7 +40,7 @@ pub struct PyScoredDocument {
 struct SparseSparseBuilderIndexIterator {
     // Use dead code to ensure we have a valid index when iterating
     #[allow(dead_code)]
-    index: Arc<Mutex<SparseBuilderIndex>>,
+    index: Arc<SparseBuilderIndex>,
     iter: TermImpactIterator<'static>,
 }
 
@@ -72,15 +63,13 @@ impl SparseSparseBuilderIndexIterator {
 
 #[pyclass(name = "SparseBuilderIndex")]
 pub struct PySparseBuilderIndex {
-    index: Arc<Mutex<SparseBuilderIndex>>,
+    index: Arc<SparseBuilderIndex>,
 }
 
 impl PySparseBuilderIndex {
     fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
-        let mut index = self.index.lock().unwrap();
-
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
-        let results = search_fn(index.deref_mut(), &query, top_k);
+        let results = search_fn(self.index.as_ref(), &query, top_k);
 
         let list = Python::with_gil(|py| {
             let v: Vec<PyScoredDocument> = results
@@ -95,16 +84,45 @@ impl PySparseBuilderIndex {
 
         Ok(list)
     }
+
+
+    fn _aio_search<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<&'a PyAny> {
+        let index = self.index.clone();
+
+        let query: HashMap<usize, ImpactValue> = py_query.extract()?;
+        
+        let fut = async move {
+            let results = task::spawn(async move {
+                let r = search_fn(index.as_ref(), &query, top_k);
+                r
+            }).into_future().await.expect("Error while searching");
+
+            Ok(Python::with_gil(|py| {
+                let v: Vec<PyScoredDocument> = results
+                .iter()
+                .map(|r| PyScoredDocument {
+                    docid: r.docid,
+                    score: r.score,
+                })
+                .collect();
+
+                v.into_py(py)
+            }))
+        };
+
+        pyo3_asyncio::tokio::future_into_py(py, fut)
+    }
+
+
 }
 
 #[pymethods]
 impl PySparseBuilderIndex {
     fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
-        let index = self.index.lock().unwrap();
         Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
-            // TODO: ugly but works since index is there
-            iter: unsafe { extend_lifetime(index.iter(term)) },
+            // TODO: ugly but works since index is up here
+            iter: unsafe { extend_lifetime(self.index.iter(term)) },
         })
     }
 
@@ -121,10 +139,18 @@ impl PySparseBuilderIndex {
         self._search(py_query, top_k, search_maxscore)
     }
 
+    fn aio_search_wand<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize) -> PyResult<&'a PyAny> {
+        self._aio_search(py, py_query, top_k, search_wand)
+    }
+
+    fn aio_search_maxscore<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize) -> PyResult<&'a PyAny> {
+        self._aio_search(py, py_query, top_k, search_maxscore)
+    }
+
     #[staticmethod]
     fn load(folder: &str, in_memory: bool) -> PyResult<Self> {
         Ok(PySparseBuilderIndex {
-            index: Arc::new(Mutex::new(load_forward_index(Path::new(folder), in_memory))),
+            index: Arc::new(load_forward_index(Path::new(folder), in_memory)),
         })
     }
 }
@@ -155,7 +181,7 @@ impl PySparseIndexer {
         terms: &PyArray1<TermIndex>,
         values: &PyArray1<ImpactValue>,
     ) -> PyResult<()> {
-        let mut indexer = self.indexer.lock().unwrap();
+        let mut indexer = self.indexer.blocking_lock();
         let terms_array = unsafe { terms.as_array() };
         let values_array = unsafe { values.as_array() };
         indexer.add(docid, &terms_array, &values_array)?;
@@ -163,11 +189,11 @@ impl PySparseIndexer {
     }
 
     fn build(&mut self, in_memory: bool) -> PyResult<PySparseBuilderIndex> {
-        let mut indexer = self.indexer.lock().unwrap();
+        let mut indexer = self.indexer.blocking_lock();
         indexer.build().expect("Error while building index");
         let index = indexer.to_forward_index(in_memory);
         Ok(PySparseBuilderIndex {
-            index: Arc::new(Mutex::new(index)),
+            index: Arc::new(index),
         })
     }
 }

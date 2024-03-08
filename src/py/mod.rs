@@ -11,6 +11,9 @@ fn xpmir_rust(_py: Python, m: &PyModule) -> PyResult<()> {
 
     submod.add_class::<sparse::PySparseIndexer>()?;
     submod.add_class::<sparse::PySparseBuilderIndex>()?;
+    
+    // Initialize logger
+    let _ = env_logger::builder().is_test(false).try_init();
 
     Ok(())
 }
