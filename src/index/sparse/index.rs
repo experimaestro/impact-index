@@ -24,7 +24,6 @@ pub struct TermIndexPageInformation {
 
     /// Maximum document ID for this page
     pub max_doc_id: DocId,
-
     // /// Minimum document ID for this page
     // pub min_doc_id: DocId
 }
@@ -42,12 +41,12 @@ impl TermIndexPageInformation {
     }
 }
 
-
 impl std::fmt::Display for TermIndexPageInformation {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "(pos: {}/{}, len: {}, max_v: {}, max_docid: {})", 
-            self.docid_position, self.value_position, self.length,
-            self.max_value, self.max_doc_id
+        write!(
+            f,
+            "(pos: {}/{}, len: {}, max_v: {}, max_docid: {})",
+            self.docid_position, self.value_position, self.length, self.max_value, self.max_doc_id
         )
     }
 }
@@ -74,7 +73,7 @@ impl IndexInformation {
 }
 
 /// Generic trait for block-based term impact iterators
-pub trait BlockTermImpactIterator : Send {
+pub trait BlockTermImpactIterator: Send {
     /// Moves to the next document whose id is greater or equal than doc_id
     /// The move can be "shallow", i.e. no need to actually hold a record:
     /// this is used by the BMW algorithm

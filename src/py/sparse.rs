@@ -1,10 +1,10 @@
+use pyo3::{pyclass, pymethods, types::PyDict, PyObject, PyRef, PyResult};
+use pyo3::{IntoPy, PyAny, Python};
 use std::collections::HashMap;
 use std::future::IntoFuture;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;  
-use pyo3::{pyclass, pymethods, types::PyDict, PyObject, PyRef, PyResult};
-use pyo3::{IntoPy, PyAny, Python};
+use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::base::{DocId, ImpactValue, TermIndex};
@@ -85,26 +85,34 @@ impl PySparseBuilderIndex {
         Ok(list)
     }
 
-
-    fn _aio_search<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<&'a PyAny> {
+    fn _aio_search<'a>(
+        &self,
+        py: Python<'a>,
+        py_query: &PyDict,
+        top_k: usize,
+        search_fn: SearchFn,
+    ) -> PyResult<&'a PyAny> {
         let index = self.index.clone();
 
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
-        
+
         let fut = async move {
             let results = task::spawn(async move {
                 let r = search_fn(index.as_ref(), &query, top_k);
                 r
-            }).into_future().await.expect("Error while searching");
+            })
+            .into_future()
+            .await
+            .expect("Error while searching");
 
             Ok(Python::with_gil(|py| {
                 let v: Vec<PyScoredDocument> = results
-                .iter()
-                .map(|r| PyScoredDocument {
-                    docid: r.docid,
-                    score: r.score,
-                })
-                .collect();
+                    .iter()
+                    .map(|r| PyScoredDocument {
+                        docid: r.docid,
+                        score: r.score,
+                    })
+                    .collect();
 
                 v.into_py(py)
             }))
@@ -112,8 +120,6 @@ impl PySparseBuilderIndex {
 
         pyo3_asyncio::tokio::future_into_py(py, fut)
     }
-
-
 }
 
 #[pymethods]
@@ -139,11 +145,21 @@ impl PySparseBuilderIndex {
         self._search(py_query, top_k, search_maxscore)
     }
 
-    fn aio_search_wand<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize) -> PyResult<&'a PyAny> {
+    fn aio_search_wand<'a>(
+        &self,
+        py: Python<'a>,
+        py_query: &PyDict,
+        top_k: usize,
+    ) -> PyResult<&'a PyAny> {
         self._aio_search(py, py_query, top_k, search_wand)
     }
 
-    fn aio_search_maxscore<'a>(&self, py: Python<'a>, py_query: &PyDict, top_k: usize) -> PyResult<&'a PyAny> {
+    fn aio_search_maxscore<'a>(
+        &self,
+        py: Python<'a>,
+        py_query: &PyDict,
+        top_k: usize,
+    ) -> PyResult<&'a PyAny> {
         self._aio_search(py, py_query, top_k, search_maxscore)
     }
 
@@ -191,7 +207,7 @@ impl PySparseIndexer {
     fn build(&mut self, in_memory: bool) -> PyResult<PySparseBuilderIndex> {
         let mut indexer = self.indexer.blocking_lock();
         indexer.build().expect("Error while building index");
-        let index = indexer.to_forward_index(in_memory);
+        let index = indexer.to_index(in_memory);
         Ok(PySparseBuilderIndex {
             index: Arc::new(index),
         })

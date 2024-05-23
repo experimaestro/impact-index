@@ -23,7 +23,7 @@ struct MaxScoreTermIterator<'a> {
     max_value: f64,
 
     // Impact with value query weight taken into account
-    impact: TermImpact
+    impact: TermImpact,
 }
 
 impl MaxScoreTermIterator<'_> {
@@ -38,20 +38,25 @@ impl MaxScoreTermIterator<'_> {
         }
     }
 
-
     fn seek_gek(&'_ mut self, doc_id: DocId) -> Option<&'_ TermImpact> {
-        debug!("[term {}] Searching for doc id >= {}", self.term_index, doc_id);
+        debug!(
+            "[term {}] Searching for doc id >= {}",
+            self.term_index, doc_id
+        );
         if doc_id <= self.impact.docid {
             return Some(&self.impact);
         }
 
         if !self.iterator.next_min_doc_id(doc_id) {
-            return None
+            return None;
         }
         let mut impact = self.iterator.current();
         impact.value *= self.query_weight;
         self.impact = impact;
-        debug!("[term {}] Current impact is {} / {}", self.term_index, self.impact, doc_id);
+        debug!(
+            "[term {}] Current impact is {} / {}",
+            self.term_index, self.impact, doc_id
+        );
         Some(&self.impact)
     }
 }
@@ -96,19 +101,18 @@ pub fn search_maxscore<'a>(
     active.sort_by(|a, b| b.iterator.max_value().total_cmp(&a.iterator.max_value()));
     assert!(active[0].iterator.max_value() >= active.last().expect("").iterator.max_value());
 
-
     let mut passive = Vec::<MaxScoreTermIterator>::new();
     let mut sum_pass = 0.;
 
     while !&active.is_empty() {
         // select next document, match all cursors
-        let candidate: DocId = (&active).iter().fold(DocId::MAX as DocId, |cur, t| {
-            cur.min(t.impact.docid)
-        });
+        let candidate: DocId = (&active)
+            .iter()
+            .fold(DocId::MAX as DocId, |cur, t| cur.min(t.impact.docid));
 
         // score document
         let mut score = 0f64;
-        passive.retain_mut(|t| 
+        passive.retain_mut(|t| {
             if let Some(impact) = t.seek_gek(candidate) {
                 if candidate == impact.docid {
                     score += impact.value as f64;
@@ -117,7 +121,7 @@ pub fn search_maxscore<'a>(
             } else {
                 false
             }
-        );
+        });
 
         active.retain_mut(|t| {
             if t.impact.docid == candidate {

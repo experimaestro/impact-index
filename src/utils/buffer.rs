@@ -1,9 +1,7 @@
-use std::{fs::File};
+use memmap2::{Mmap, MmapOptions};
+use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use memmap2::{Mmap, MmapOptions};
-
-
 
 pub trait Slice: Send + Sync {
     fn data(&'_ self) -> &'_ [u8];
@@ -71,8 +69,6 @@ impl MmapBuffer {
     }
 }
 
-
-
 struct MmapSlice {
     vector: Vec<u8>,
 }
@@ -86,10 +82,8 @@ impl Slice for MmapSlice {
 impl Buffer for MmapBuffer {
     fn slice(&'_ self, start: usize, end: usize) -> Box<dyn Slice> {
         let vector = Vec::from_iter(self.mmap[start..end].iter().map(|t| *t));
-        let _data :  &[u8] =  &vector;
+        let _data: &[u8] = &vector;
 
-        Box::new(MmapSlice {
-            vector: vector,
-        })
+        Box::new(MmapSlice { vector: vector })
     }
 }

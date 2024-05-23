@@ -6,7 +6,9 @@ use helpers::documents::{create_document, document_vectors};
 use log::info;
 use rand::thread_rng;
 use temp_dir::TempDir;
-use xpmir_rust::index::sparse::{builder::Indexer, wand::search_wand, SearchFn, maxscore::search_maxscore};
+use xpmir_rust::index::sparse::{
+    builder::Indexer, maxscore::search_maxscore, wand::search_wand, SearchFn,
+};
 
 fn benchmark(c: &mut Criterion, name: &str, search_fn: SearchFn) {
     let mut rng = thread_rng();
@@ -41,7 +43,7 @@ fn benchmark(c: &mut Criterion, name: &str, search_fn: SearchFn) {
     }
 
     indexer.build().expect("Error while building the index");
-    let index = indexer.to_forward_index(true);
+    let index = indexer.to_index(true);
 
     let query = HashMap::from([(0, 1.2), (1, 2.3), (2, 3.2), (3, 1.2), (4, 0.7), (5, 2.3)]);
 

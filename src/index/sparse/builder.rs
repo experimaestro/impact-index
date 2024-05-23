@@ -58,7 +58,8 @@ impl TermsImpacts {
 
         TermsImpacts {
             /// Maximum number of postings For a term, 16 * 1024 postings by
-            /// default, that is roughly 4Gb of memory in total
+            /// default, that is roughly 4Gb of max. memory in total
+            /// with a vocabular of 32k tokens
             in_memory_threshold: 16 * 1024,
             folder: folder.to_path_buf(),
             postings_file: File::options()
@@ -154,7 +155,11 @@ impl TermsImpacts {
         );
         postings_info.information.docid_position = position;
         // postings_info.information.min_doc_id = postings_info.postings[0].docid;
-        postings_info.information.max_doc_id = postings_info.postings.last().expect("should not be empty").docid;
+        postings_info.information.max_doc_id = postings_info
+            .postings
+            .last()
+            .expect("should not be empty")
+            .docid;
         postings_info.information.value_position = position; // will be ignored anyways
         postings_info.information.length = len_postings;
         self.information.terms[term_ix]
@@ -249,10 +254,8 @@ impl Indexer {
         Ok(())
     }
 
-    /**
-     * Get a forward index
-     */
-    pub fn to_forward_index(&mut self, in_memory: bool) -> SparseBuilderIndex {
+    /// Returns a sparse index (the index has to be built)
+    pub fn to_index(&mut self, in_memory: bool) -> SparseBuilderIndex {
         assert!(self.built, "Index is not built");
         assert!(
             self.impacts.information.terms.len() > 0,
@@ -317,11 +320,7 @@ pub trait SparseBuilderIndexTrait<'a> {
     fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a>;
 }
 
-
-
-
-
-pub struct SparseBuilderIndexIterator<'a>  {
+pub struct SparseBuilderIndexIterator<'a> {
     /// Iterator over page information
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
 
@@ -334,7 +333,6 @@ pub struct SparseBuilderIndexIterator<'a>  {
     index: usize,
     /// Term index (for reference)
     term_ix: TermIndex,
-    
 
     /// Our sparse index
     sparse_index: &'a SparseBuilderIndex,
@@ -353,13 +351,13 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         Self {
             // The index
             sparse_index: &index,
-            
+
             // Iterator over term index page information
             info_iter: iter,
 
             // Current term index page information
             info: info,
-            
+
             // Current memory slice (None if not loaded)
             slice: None,
 
@@ -368,7 +366,6 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
             /// Just for information purpose
             term_ix: term_ix,
-
         }
     }
 
@@ -406,13 +403,12 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         let slice = self.sparse_index.buffer.slice(start, end);
         self.slice = Some(slice);
     }
-        
+
     fn next_block(&mut self) {
         self.info = self.info_iter.next();
         self.slice = None;
         self.index = 0;
     }
-
 }
 
 impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
@@ -435,14 +431,18 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
                 self.read_block(info);
                 debug!("[{}] Loading block data: {}", self.term_ix, info);
             }
-            
+
             let data = self.slice.as_ref().expect("").as_ref().data();
             let start = (self.index as usize) * Self::RECORD_SIZE;
             let end = start + Self::RECORD_SIZE;
             let mut slice_ptr = &data[start..end];
-    
-            let docid: DocId = slice_ptr.read_u64::<BigEndian>().expect("Erreur de lecture");
-            let value: ImpactValue = slice_ptr.read_f32::<BigEndian>().expect("Erreur de lecture");
+
+            let docid: DocId = slice_ptr
+                .read_u64::<BigEndian>()
+                .expect("Erreur de lecture");
+            let value: ImpactValue = slice_ptr
+                .read_f32::<BigEndian>()
+                .expect("Erreur de lecture");
             self.index += 1;
             Some(TermImpact {
                 docid: docid,
@@ -451,7 +451,6 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
         } else {
             None
         }
-
     }
 }
 
@@ -492,7 +491,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             },
         ));
         let min_doc_id = self.current_min_docid.expect("Should not be None");
-        
+
         // Move to the block having at least one document greater that min_doc_id
         let ok = self.iterator.get_mut().move_iterator(min_doc_id);
 
@@ -527,10 +526,13 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             debug!(
                 "[{}] Current DOC ID value is {}",
                 iterator.term_ix,
-                if let Some(cv) = current_value.as_ref() {cv.docid as i64} else {-1},
+                if let Some(cv) = current_value.as_ref() {
+                    cv.docid as i64
+                } else {
+                    -1
+                },
             );
-            
-            
+
             *current_value = None;
             while let Some(v) = iterator.next() {
                 if v.docid >= min_docid {

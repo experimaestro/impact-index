@@ -1,4 +1,4 @@
-use log::{debug,info};
+use log::{debug, info};
 use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
@@ -70,7 +70,7 @@ impl TestIndex {
         lambda_words: f32,
         max_words: usize,
         seed: Option<u64>,
-        in_memory_threshold: Option<usize>
+        in_memory_threshold: Option<usize>,
     ) -> Self {
         let dir = TempDir::new().expect("Could not create temporary directory");
         let mut indexer = Indexer::new(&dir.path());
@@ -136,7 +136,7 @@ impl TestIndex {
 #[test]
 fn test_index() {
     let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
-    let index = data.indexer.to_forward_index(true);
+    let index = data.indexer.to_index(true);
 
     eprintln!("Index built in {}", &data.dir.path().display());
     // Verify the index
@@ -151,8 +151,18 @@ fn test_index() {
                 "The index has too many elements for term {}",
                 term_ix
             ));
-            info!("DocID {} vs {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
-            assert!(expected.docid == observed.docid, "Expected doc ID {}, got {} for term {} [entry {}]", expected.docid, observed.docid, term_ix, ix);
+            info!(
+                "DocID {} vs {} for term {} [entry {}]",
+                expected.docid, observed.docid, term_ix, ix
+            );
+            assert!(
+                expected.docid == observed.docid,
+                "Expected doc ID {}, got {} for term {} [entry {}]",
+                expected.docid,
+                observed.docid,
+                term_ix,
+                ix
+            );
             assert!(expected.value == observed.value);
         }
     }
@@ -228,10 +238,10 @@ fn test_search(
         max_words,
         seed,
         // Use small pages
-        Some(10)
+        Some(10),
     );
     let mut index = if in_memory {
-        data.indexer.to_forward_index(true)
+        data.indexer.to_index(true)
     } else {
         load_forward_index(data.dir.path(), true)
     };
