@@ -7,6 +7,8 @@ use std::{
     io::{Read, Seek, Write},
     path::Path,
 };
+use byteorder::{BigEndian, WriteBytesExt};
+use ouroboros::self_referencing;
 
 use super::{
     index::{BlockTermImpactIndex, BlockTermImpactIterator},
@@ -16,16 +18,17 @@ use crate::{
     base::{DocId, ImpactValue, TermIndex},
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
+use ciborium::value::Value;
 use log::debug;
 use serde::{Deserialize, Serialize};
-use sucds::{EliasFanoBuilder, Searial};
+use sucds::{EliasFano, EliasFanoBuilder, Searial};
 
 //
 // ---- Compression ---
 //
 pub trait Compressor<T> {
     fn write(&self, writer: &mut dyn Write, values: &[T]);
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T>>;
+    fn read(&self, count: usize, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T> + Send>;
 }
 
 #[typetag::serde(tag = "type")]
@@ -110,10 +113,10 @@ pub struct CompressedIndexIterator<'a> {
     info: Option<&'a TermBlockInformation>,
 
     /// Current iterator on document IDs
-    docid_iterator: Option<Box<dyn Iterator<Item = DocId>>>,
+    docid_iterator: Option<Box<dyn Iterator<Item = DocId> + Send>>,
 
     /// Current iterator on impacts
-    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue>>>,
+    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue> + Send>>,
 
     index: usize,
 
@@ -190,7 +193,7 @@ impl<'a> CompressedIndexIterator<'a> {
             .sparse_index
             .information
             .doc_ids_compressor
-            .read(&mut slice.data());
+            .read(info.length, &mut slice.data());
         self.docid_iterator = Some(docid_iterator);
 
         let slice = self.sparse_index.docid_buffer.slice(
@@ -201,7 +204,7 @@ impl<'a> CompressedIndexIterator<'a> {
             .sparse_index
             .information
             .values_compressor
-            .read(&mut slice.data());
+            .read(info.length, &mut slice.data());
         self.impact_iterator = Some(value_iterator);
     }
 
@@ -559,19 +562,76 @@ pub fn load_compressed_index(path: &Path, in_memory: bool) -> CompressedIndex {
 
 // --- Elias Fano
 
-struct EliasFanoCompressor {}
+#[derive(Serialize, Deserialize)]
+pub struct EliasFanoCompressor {}
 
-impl<'a> Compressor<usize> for EliasFanoCompressor {
-    fn write(&self, writer: &mut dyn Write, values: &[usize]) {
+#[typetag::serde]
+impl DocIdCompressor for EliasFanoCompressor {
+}
+
+#[self_referencing]
+struct EliasFanoIterator {
+    data: EliasFano,
+    #[borrows(data)]
+    pub iterator: sucds::elias_fano::iter::Iter<'> + 'this
+}
+
+unsafe impl <'a> Send for EliasFanoIterator {}
+
+impl <'a> Iterator for EliasFanoIterator {
+    type Item = DocId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.with_mut(|fields| {
+            if let Some(x) = fields.iterator.next() {
+                Some(x as DocId)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Compressor<DocId> for EliasFanoCompressor {
+    fn write(&self, writer: &mut dyn Write, values: &[DocId]) {
         let max_value = *values.iter().max().unwrap();
 
-        let mut c = EliasFanoBuilder::new(max_value, values.len()).expect("Error when building");
+        let mut c = EliasFanoBuilder::new(max_value as usize, values.len()).expect("Error when building");
 
-        c.append(values).expect("Could not add a doc ID");
-        c.build().serialize_into(writer).expect("Yoooo");
+        for &x in values {
+            c.push(x as usize).expect("Could not add a doc ID");
+        }
+        c.build().serialize_into(writer).expect("Error while serializing");
     }
 
-    fn read(&self, _reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize>> {
+    fn read(&self, count: usize, reader: &mut dyn Read) -> Box<dyn Iterator<Item = DocId> + Send> {
+        let data = EliasFano::deserialize_from(reader).expect("Error while reading");
+        Box::new(EliasFanoIteratorBuilder { 
+            data: data, 
+            iterator_builder: |data: &EliasFano| data.iter(0) 
+        }.build())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+
+pub struct Quantizer {
+    pub levels: u16,
+    pub min: ImpactValue,
+    pub max: ImpactValue
+}
+
+#[typetag::serde]
+impl ValueCompressor for Quantizer {}
+
+impl <'a> Compressor<ImpactValue> for Quantizer {
+    fn write(&self, writer: &mut dyn Write, values: &[ImpactValue]) {
+        for x in values {
+            writer.write_f32::<BigEndian>(*x);
+        }
+    }
+
+    fn read(&self, count: usize, reader: &mut dyn Read) -> Box<dyn Iterator<Item = ImpactValue> + Send> {
         todo!()
     }
 }
