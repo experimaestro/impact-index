@@ -1,5 +1,7 @@
 //! Methods for compressing the posting lists
 
+use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
+use ouroboros::self_referencing;
 use std::{
     cell::RefCell,
     fmt,
@@ -18,14 +20,19 @@ use crate::{
 };
 use log::debug;
 use serde::{Deserialize, Serialize};
-use sucds::{EliasFanoBuilder, Searial};
+use sucds::{EliasFano, EliasFanoBuilder, Searial};
 
 //
 // ---- Compression ---
 //
+
 pub trait Compressor<T> {
     fn write(&self, writer: &mut dyn Write, values: &[T]);
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T> + Send>;
+    fn read<'a>(
+        &self,
+        count: usize,
+        slice: Box<dyn Slice + 'a>,
+    ) -> Box<dyn Iterator<Item = T> + Send + 'a>;
 }
 
 #[typetag::serde(tag = "type")]
@@ -44,7 +51,7 @@ pub struct TermBlockInformation {
     pub docid_position_range: (u64, u64),
 
     /// Position within the impact value stream
-    pub value_position_range: (u64, u64),
+    pub impact_position_range: (u64, u64),
 
     /// Number of records
     pub length: usize,
@@ -66,8 +73,8 @@ impl std::fmt::Display for TermBlockInformation {
             "(docids: {}-{}, impacts: {}-{}, len: {}, max_v: {}, docid: {}-{})",
             self.docid_position_range.0,
             self.docid_position_range.1,
-            self.value_position_range.0,
-            self.value_position_range.1,
+            self.impact_position_range.0,
+            self.impact_position_range.1,
             self.length,
             self.max_value,
             self.min_doc_id,
@@ -114,10 +121,10 @@ pub struct CompressedIndexIterator<'a> {
     info: Option<&'a TermBlockInformation>,
 
     /// Current iterator on document IDs
-    docid_iterator: Option<Box<dyn Iterator<Item = DocId> + Send>>,
+    docid_iterator: Option<Box<dyn Iterator<Item = DocId> + Send + 'a>>,
 
     /// Current iterator on impacts
-    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue> + Send>>,
+    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue> + Send + 'a>>,
 
     index: usize,
 
@@ -194,18 +201,18 @@ impl<'a> CompressedIndexIterator<'a> {
             .sparse_index
             .information
             .doc_ids_compressor
-            .read(&mut slice.data());
+            .read(info.length, slice);
         self.docid_iterator = Some(docid_iterator);
 
         let slice = self.sparse_index.docid_buffer.slice(
-            info.value_position_range.0 as usize,
-            info.value_position_range.1 as usize,
+            info.impact_position_range.0 as usize,
+            info.impact_position_range.1 as usize,
         );
         let value_iterator = self
             .sparse_index
             .information
             .values_compressor
-            .read(&mut slice.data());
+            .read(info.length, slice);
         self.impact_iterator = Some(value_iterator);
     }
 
@@ -430,12 +437,14 @@ pub fn compress(
     doc_ids_compressor: Box<dyn DocIdCompressor>,
     values_compressor: Box<dyn ValueCompressor>,
 ) -> Result<(), std::io::Error> {
+    // path.is_dir()
+
     // File for impact values
-    let mut value_writer = File::options()
+    let mut impact_writer = File::options()
         .write(true)
         .truncate(true)
         .create(true)
-        .open(path.join("value.dat"))
+        .open(path.join("impacts.dat"))
         .expect("Could not create the values file");
 
     // File for document IDs
@@ -443,7 +452,7 @@ pub fn compress(
         .write(true)
         .truncate(true)
         .create(true)
-        .open(path.join("docid.dat"))
+        .open(path.join("docids.dat"))
         .expect("Could not create the document IDs file");
 
     // Global information
@@ -452,8 +461,8 @@ pub fn compress(
         doc_ids_compressor: doc_ids_compressor,
         values_compressor: values_compressor,
     };
-    let value_position = 0;
-    let docid_position = 0;
+    let mut impact_position = 0;
+    let mut docid_position = 0;
 
     // Iterate over terms
     for term_ix in 0..index.length() {
@@ -485,13 +494,13 @@ pub fn compress(
             // Write
             information
                 .doc_ids_compressor
-                .write(&mut value_writer, &docids);
+                .write(&mut docid_writer, &docids);
             information
                 .values_compressor
-                .write(&mut docid_writer, &impacts);
+                .write(&mut impact_writer, &impacts);
 
             // Add information
-            let new_value_position = value_writer.stream_position()?;
+            let new_impact_position = impact_writer.stream_position()?;
             let new_docid_position = docid_writer.stream_position()?;
 
             let (min_doc_id, max_doc_id) = docids
@@ -504,12 +513,14 @@ pub fn compress(
 
             let block_term_information = TermBlockInformation {
                 docid_position_range: (docid_position, new_docid_position),
-                value_position_range: (value_position, new_value_position),
+                impact_position_range: (impact_position, new_impact_position),
                 length: impacts.len(),
                 max_value: impacts.iter().fold(0f32, |cur, x| cur.max(*x)),
                 min_doc_id: min_doc_id,
                 max_doc_id: max_doc_id,
             };
+            docid_position = new_docid_position;
+            impact_position = new_impact_position;
 
             term_information.max_value = term_information
                 .max_value
@@ -525,12 +536,15 @@ pub fn compress(
     }
 
     // Serialize the overall structure
-    let info_path = path.join(format!("information.cbor"));
+    let info_path = path.join("information.cbor");
+    let info_path_s = info_path.display().to_string();
+
     let info_file = File::options()
         .write(true)
         .truncate(true)
+        .create(true)
         .open(info_path)
-        .expect("Error while creating file");
+        .expect(&format!("Error while creating file {}", info_path_s));
 
     ciborium::ser::into_writer(&information, info_file)
         .expect("Error saving compressed term index information");
@@ -569,19 +583,133 @@ pub fn load_compressed_index(path: &Path, in_memory: bool) -> CompressedIndex {
 
 // --- Elias Fano
 
-struct EliasFanoCompressor {}
+#[derive(Serialize, Deserialize)]
+pub struct EliasFanoCompressor {}
 
-impl<'a> Compressor<usize> for EliasFanoCompressor {
-    fn write(&self, writer: &mut dyn Write, values: &[usize]) {
+#[typetag::serde]
+impl DocIdCompressor for EliasFanoCompressor {}
+
+#[self_referencing]
+struct EliasFanoIterator {
+    data: EliasFano,
+    #[borrows(data)]
+    #[covariant]
+    pub iterator: sucds::elias_fano::iter::Iter<'this>,
+}
+
+unsafe impl<'a> Send for EliasFanoIterator {}
+
+impl<'a> Iterator for EliasFanoIterator {
+    type Item = DocId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.with_mut(|fields| {
+            if let Some(x) = fields.iterator.next() {
+                Some(x as DocId)
+            } else {
+                None
+            }
+        })
+    }
+}
+
+impl Compressor<DocId> for EliasFanoCompressor {
+    fn write(&self, writer: &mut dyn Write, values: &[DocId]) {
         let max_value = *values.iter().max().unwrap();
 
-        let mut c = EliasFanoBuilder::new(max_value, values.len()).expect("Error when building");
+        let mut c = EliasFanoBuilder::new((max_value + 1) as usize, values.len())
+            .expect("Error when building");
 
-        c.append(values).expect("Could not add a doc ID");
-        c.build().serialize_into(writer).expect("Yoooo");
+        for &x in values {
+            c.push(x as usize).expect("Could not add a doc ID");
+        }
+        c.build()
+            .serialize_into(writer)
+            .expect("Error while serializing");
     }
 
-    fn read(&self, _reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize> + Send> {
-        todo!()
+    fn read<'a>(
+        &self,
+        count: usize,
+        slice: Box<dyn Slice + 'a>,
+    ) -> Box<dyn Iterator<Item = DocId> + Send + 'a> {
+        let data = EliasFano::deserialize_from(slice.data()).expect("Error while reading");
+        Box::new(
+            EliasFanoIteratorBuilder {
+                data: data,
+                iterator_builder: |data: &EliasFano| data.iter(0),
+            }
+            .build(),
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+
+pub struct Quantizer {
+    pub nbits: u32,
+    pub min: ImpactValue,
+    pub max: ImpactValue,
+}
+
+struct QuantizerIterator<'a> {
+    nbits: u32,
+    index: usize,
+    count: usize,
+    min: ImpactValue,
+    span: ImpactValue,
+
+    bit_reader: BitReader<Box<dyn Read + Send + 'a>, bitstream_io::BigEndian>,
+}
+
+impl<'a> Iterator for QuantizerIterator<'a> {
+    type Item = ImpactValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.count {
+            self.index += 1;
+            let quantized = self.bit_reader.read::<u32>(self.nbits).unwrap();
+            Some((quantized as ImpactValue) * self.span + self.min)
+        } else {
+            None
+        }
+    }
+}
+
+#[typetag::serde]
+impl ValueCompressor for Quantizer {}
+
+impl<'a> Compressor<ImpactValue> for Quantizer {
+    fn write(&self, writer: &mut dyn Write, values: &[ImpactValue]) {
+        let levels = (2 as u32).pow(self.nbits as u32);
+
+        let mut bit_writer = BitWriter::endian(writer, BigEndian);
+
+        for x in values {
+            let value =
+                ((*x - self.min) / (self.max - self.min) * (levels - 1) as f32).round() as u32;
+            bit_writer
+                .write(self.nbits, value.max(0).min(levels - 1))
+                .expect("Cannot write bits");
+        }
+    }
+
+    fn read<'b>(
+        &self,
+        count: usize,
+        slice: Box<dyn Slice + 'b>,
+    ) -> Box<dyn Iterator<Item = ImpactValue> + Send + 'b> {
+        todo!();
+        // let bit_reader = BitReader::endian(Box::new(slice.data()), BigEndian);
+        // Box::new(
+        //     QuantizerIterator::<'b> {
+        //         nbits: self.nbits,
+        //         index: 0,
+        //         count: count,
+        //         bit_reader: bit_reader,
+        //         min: self.min,
+        //         span: self.max - self.min
+        //     }
+        // )
     }
 }

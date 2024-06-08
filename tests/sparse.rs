@@ -4,6 +4,8 @@ use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
+        compress::{compress, load_compressed_index, EliasFanoCompressor, Quantizer},
+        index::{BlockTermImpactIndex, BlockTermImpactIterator},
         maxscore::search_maxscore,
         wand::search_wand,
         SearchFn, TermImpact,
@@ -287,4 +289,42 @@ fn test_search(
     }
 
     vec_compare(&observed, &expected);
+}
+
+fn check_same_index(
+    index_a: &mut dyn BlockTermImpactIterator,
+    index_b: &mut dyn BlockTermImpactIterator,
+) {
+    while let Some(a) = index_a.next() {
+        let b = index_b.next().expect("Index b contains less entries");
+        assert!(a.docid == b.docid);
+        assert!(a.value == b.value);
+    }
+}
+
+#[test]
+fn test_compressed_index() {
+    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
+    let index = data.indexer.to_index(true);
+
+    let dir = TempDir::new().expect("Could not create temporary directory");
+    let docid_compressor = Box::new(EliasFanoCompressor {});
+    let impact_compressor = Box::new(Quantizer {
+        nbits: 4,
+        min: 0.,
+        max: 2.,
+    });
+
+    compress(
+        dir.path(),
+        &index,
+        1024,
+        docid_compressor,
+        impact_compressor,
+    )
+    .expect("An error occurred");
+
+    let c_index = load_compressed_index(dir.path(), true);
+
+    check_same_index(c_index.iterator(0).as_mut(), index.iterator(0).as_mut());
 }

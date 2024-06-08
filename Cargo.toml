@@ -40,6 +40,8 @@ env_logger = "0.9.3"
 typetag = "0.2"
 memmap2 = "0.5.8"
 self_cell = "0.10.2"
+ouroboros = "0.15"
+bitstream-io = "2.3"
 
 [dev-dependencies]
 criterion = "0.4.0"
