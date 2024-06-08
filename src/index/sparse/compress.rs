@@ -25,7 +25,7 @@ use sucds::{EliasFanoBuilder, Searial};
 //
 pub trait Compressor<T> {
     fn write(&self, writer: &mut dyn Write, values: &[T]);
-    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T>>;
+    fn read(&self, reader: &mut dyn Read) -> Box<dyn Iterator<Item = T> + Send>;
 }
 
 #[typetag::serde(tag = "type")]
@@ -53,6 +53,9 @@ pub struct TermBlockInformation {
     pub max_value: ImpactValue,
 
     /// Maximum document ID for this page
+    pub min_doc_id: DocId,
+
+    /// Maximum document ID for this page
     pub max_doc_id: DocId,
 }
 
@@ -60,13 +63,14 @@ impl std::fmt::Display for TermBlockInformation {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "(docids: {}-{}, impacts: {}-{}, len: {}, max_v: {}, max_docid: {})",
+            "(docids: {}-{}, impacts: {}-{}, len: {}, max_v: {}, docid: {}-{})",
             self.docid_position_range.0,
             self.docid_position_range.1,
             self.value_position_range.0,
             self.value_position_range.1,
             self.length,
             self.max_value,
+            self.min_doc_id,
             self.max_doc_id
         )
     }
@@ -110,10 +114,10 @@ pub struct CompressedIndexIterator<'a> {
     info: Option<&'a TermBlockInformation>,
 
     /// Current iterator on document IDs
-    docid_iterator: Option<Box<dyn Iterator<Item = DocId>>>,
+    docid_iterator: Option<Box<dyn Iterator<Item = DocId> + Send>>,
 
     /// Current iterator on impacts
-    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue>>>,
+    impact_iterator: Option<Box<dyn Iterator<Item = ImpactValue> + Send>>,
 
     index: usize,
 
@@ -376,13 +380,13 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
             .max_doc_id
     }
 
-    // fn min_block_doc_id(&self) -> DocId {
-    //     self.iterator
-    //         .borrow()
-    //         .info
-    //         .expect("Iterator was over")
-    //         .min_doc_id
-    // }
+    fn min_block_doc_id(&self) -> DocId {
+        self.iterator
+            .borrow()
+            .info
+            .expect("Iterator was over")
+            .min_doc_id
+    }
 
     fn max_block_value(&self) -> ImpactValue {
         self.iterator
@@ -489,16 +493,22 @@ pub fn compress(
             // Add information
             let new_value_position = value_writer.stream_position()?;
             let new_docid_position = docid_writer.stream_position()?;
+
+            let (min_doc_id, max_doc_id) = docids
+                .iter()
+                .fold((0 as DocId, 0 as DocId), |cur, x| {
+                    (cur.0.min(*x), cur.1.max(*x))
+                })
+                .try_into()
+                .unwrap();
+
             let block_term_information = TermBlockInformation {
                 docid_position_range: (docid_position, new_docid_position),
                 value_position_range: (value_position, new_value_position),
                 length: impacts.len(),
                 max_value: impacts.iter().fold(0f32, |cur, x| cur.max(*x)),
-                max_doc_id: docids
-                    .iter()
-                    .fold(0 as DocId, |cur, x| cur.max(*x))
-                    .try_into()
-                    .unwrap(),
+                min_doc_id: min_doc_id,
+                max_doc_id: max_doc_id,
             };
 
             term_information.max_value = term_information
@@ -571,7 +581,7 @@ impl<'a> Compressor<usize> for EliasFanoCompressor {
         c.build().serialize_into(writer).expect("Yoooo");
     }
 
-    fn read(&self, _reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize>> {
+    fn read(&self, _reader: &mut dyn Read) -> Box<dyn Iterator<Item = usize> + Send> {
         todo!()
     }
 }
