@@ -5,6 +5,31 @@ use std::path::PathBuf;
 
 pub trait Slice: Send + Sync {
     fn data(&'_ self) -> &'_ [u8];
+    fn read(&mut self, index: usize, buf: &mut [u8]) -> std::io::Result<usize>;
+}
+
+pub struct SliceReader<'a> {
+    slice: Box<dyn Slice + 'a>,
+    index: usize,
+}
+
+impl<'a> SliceReader<'a> {
+    pub fn new(slice: Box<dyn Slice + 'a>) -> Self {
+        SliceReader {
+            slice: slice,
+            index: 0,
+        }
+    }
+}
+
+impl<'a> Read for SliceReader<'a> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let r = self.slice.read(self.index, buf);
+        if let std::io::Result::Ok(read) = r {
+            self.index += read;
+        }
+        r
+    }
 }
 
 struct MemorySlice<'a> {
@@ -14,6 +39,11 @@ struct MemorySlice<'a> {
 impl Slice for MemorySlice<'_> {
     fn data(&'_ self) -> &'_ [u8] {
         self._data
+    }
+
+    fn read(&mut self, index: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut data = &self._data[index..];
+        data.read(buf)
     }
 }
 
@@ -76,6 +106,11 @@ struct MmapSlice {
 impl Slice for MmapSlice {
     fn data(&'_ self) -> &'_ [u8] {
         &self.vector
+    }
+
+    fn read(&mut self, index: usize, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut data = &self.vector[index..];
+        data.read(buf)
     }
 }
 

@@ -1,10 +1,13 @@
 use log::{debug, info};
+use ntest::assert_about_eq;
 use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
-        compress::{compress, load_compressed_index, EliasFanoCompressor, Quantizer},
+        compress::{
+            compress, docid::EliasFanoCompressor, impact::Quantizer, load_compressed_index,
+        },
         index::{BlockTermImpactIndex, BlockTermImpactIterator},
         maxscore::search_maxscore,
         wand::search_wand,
@@ -294,11 +297,12 @@ fn test_search(
 fn check_same_index(
     index_a: &mut dyn BlockTermImpactIterator,
     index_b: &mut dyn BlockTermImpactIterator,
+    impact_eps: f64,
 ) {
     while let Some(a) = index_a.next() {
         let b = index_b.next().expect("Index b contains less entries");
         assert!(a.docid == b.docid);
-        assert!(a.value == b.value);
+        assert_about_eq!(a.value, b.value, impact_eps);
     }
 }
 
@@ -309,11 +313,8 @@ fn test_compressed_index() {
 
     let dir = TempDir::new().expect("Could not create temporary directory");
     let docid_compressor = Box::new(EliasFanoCompressor {});
-    let impact_compressor = Box::new(Quantizer {
-        nbits: 4,
-        min: 0.,
-        max: 2.,
-    });
+    let impact_compressor = Box::new(Quantizer::new(4, 0., 5.));
+    let step = 5. / ((2 << 4) as f64);
 
     compress(
         dir.path(),
@@ -326,5 +327,9 @@ fn test_compressed_index() {
 
     let c_index = load_compressed_index(dir.path(), true);
 
-    check_same_index(c_index.iterator(0).as_mut(), index.iterator(0).as_mut());
+    check_same_index(
+        c_index.iterator(0).as_mut(),
+        index.iterator(0).as_mut(),
+        step,
+    );
 }

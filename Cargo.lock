@@ -1726,7 +1726,7 @@ checksum = "32b752e52a2da0ddfbdbcc6fceadfeede4c939ed16d13e648833a61dfb611ed8"
 
 [[package]]
 name = "xpmir-rust"
-version = "0.21.0"
+version = "0.22.0"
 dependencies = [
  "bitstream-io",
  "byteorder",
