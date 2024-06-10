@@ -108,8 +108,10 @@ pub trait BlockTermImpactIterator: Send {
 
     /// Returns the total number of records
     fn length(&self) -> usize;
+}
 
-    /// Returns the next element
+impl<'a> Iterator for dyn BlockTermImpactIterator + 'a {
+    type Item = TermImpact;
     fn next(&mut self) -> Option<TermImpact> {
         if self.next_min_doc_id(0) {
             Some(self.current())
@@ -125,7 +127,7 @@ pub trait BlockTermImpactIndex: Send + Sync {
     /// ## Arguments
     ///
     /// * `term_ix` The index of the term
-    fn iterator(&self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_>;
+    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a>;
 
     /// Returns all the iterators for a term (if split list)
     fn iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {

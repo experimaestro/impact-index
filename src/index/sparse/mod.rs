@@ -33,7 +33,7 @@ impl std::fmt::Display for TermImpact {
 }
 
 /// An iterator on term impacts
-pub type TermImpactIterator<'a> = Box<dyn BlockTermImpactIterator + 'a + Send>;
+pub type TermImpactIterator<'a> = Box<dyn BlockTermImpactIterator + 'a>;
 
 /// A search function
 pub type SearchFn = fn(
