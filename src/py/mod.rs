@@ -15,7 +15,7 @@ fn xpmir_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_submodule(submod)?;
 
     submod.add_class::<sparse::PySparseIndexer>()?;
-    submod.add_class::<sparse::PySparseBuilderIndex>()?;
+    submod.add_class::<sparse::PySparseIndex>()?;
 
     Ok(())
 }

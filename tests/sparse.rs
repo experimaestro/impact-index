@@ -6,7 +6,7 @@ use xpmir_rust::{
     index::sparse::{
         builder::{load_forward_index, Indexer},
         compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
-        index::{BlockTermImpactIndex, BlockTermImpactIterator},
+        index::{BlockTermImpactIterator, SparseIndex},
         load_index,
         maxscore::search_maxscore,
         transforms::IndexTransform,

@@ -8,7 +8,7 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::base::{DocId, ImpactValue, TermIndex};
-use crate::index::sparse::index::BlockTermImpactIndex;
+use crate::index::sparse::index::SparseIndex;
 use crate::index::sparse::load_index;
 use crate::index::sparse::maxscore::search_maxscore;
 use crate::index::sparse::{
@@ -39,7 +39,7 @@ pub struct PyScoredDocument {
 struct SparseSparseBuilderIndexIterator {
     // Use dead code to ensure we have a valid index when iterating
     #[allow(dead_code)]
-    index: Arc<Box<dyn BlockTermImpactIndex>>,
+    index: Arc<Box<dyn SparseIndex>>,
     iter: TermImpactIterator<'static>,
 }
 
@@ -61,11 +61,11 @@ impl SparseSparseBuilderIndexIterator {
 }
 
 #[pyclass(name = "SparseBuilderIndex")]
-pub struct PySparseBuilderIndex {
-    index: Arc<Box<dyn BlockTermImpactIndex>>,
+pub struct PySparseIndex {
+    index: Arc<Box<dyn SparseIndex>>,
 }
 
-impl PySparseBuilderIndex {
+impl PySparseIndex {
     fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
         let results = search_fn(&**self.index, &query, top_k);
@@ -122,7 +122,7 @@ impl PySparseBuilderIndex {
 }
 
 #[pymethods]
-impl PySparseBuilderIndex {
+impl PySparseIndex {
     fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
         Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
@@ -164,7 +164,7 @@ impl PySparseBuilderIndex {
 
     #[staticmethod]
     fn load(folder: &str, in_memory: bool) -> PyResult<Self> {
-        Ok(PySparseBuilderIndex {
+        Ok(PySparseIndex {
             index: Arc::new(load_index(Path::new(folder), in_memory)),
         })
     }
@@ -203,11 +203,11 @@ impl PySparseIndexer {
         Ok(())
     }
 
-    fn build(&mut self, in_memory: bool) -> PyResult<PySparseBuilderIndex> {
+    fn build(&mut self, in_memory: bool) -> PyResult<PySparseIndex> {
         let mut indexer = self.indexer.blocking_lock();
         indexer.build().expect("Error while building index");
         let index = indexer.to_index(in_memory);
-        Ok(PySparseBuilderIndex {
+        Ok(PySparseIndex {
             index: Arc::new(Box::new(index)),
         })
     }

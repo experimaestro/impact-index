@@ -121,7 +121,7 @@ impl<'a> Iterator for dyn BlockTermImpactIterator + 'a {
     }
 }
 
-pub trait BlockTermImpactIndex: Send + Sync {
+pub trait SparseIndex: Send + Sync {
     /// Returns an iterator for a given term
     ///
     /// ## Arguments

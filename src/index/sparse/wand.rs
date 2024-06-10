@@ -11,7 +11,7 @@ use crate::{
 
 use crate::base::TermIndex;
 
-use super::index::{BlockTermImpactIndex, BlockTermImpactIterator};
+use super::index::{BlockTermImpactIterator, SparseIndex};
 
 /**
  * WAND algorithm
@@ -46,10 +46,7 @@ struct WandSearch<'a> {
 }
 
 impl<'a> WandSearch<'a> {
-    fn new<'b: 'a>(
-        index: &'b dyn BlockTermImpactIndex,
-        query: &HashMap<TermIndex, ImpactValue>,
-    ) -> Self {
+    fn new<'b: 'a>(index: &'b dyn SparseIndex, query: &HashMap<TermIndex, ImpactValue>) -> Self {
         let mut iterators = Vec::new();
 
         for (&ix, &weight) in query.iter() {
@@ -136,7 +133,7 @@ impl<'a> WandSearch<'a> {
  * Search using the WAND algorithmw
  */
 pub fn search_wand<'a>(
-    index: &'a dyn BlockTermImpactIndex,
+    index: &'a dyn SparseIndex,
     query: &HashMap<TermIndex, ImpactValue>,
     top_k: usize,
 ) -> Vec<ScoredDocument> {

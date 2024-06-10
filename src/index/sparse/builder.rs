@@ -10,7 +10,7 @@ use log::debug;
 use ndarray::{ArrayBase, Data, Ix1};
 
 use super::{
-    index::{BlockTermImpactIndex, BlockTermImpactIterator},
+    index::{BlockTermImpactIterator, SparseIndex},
     index::{IndexInformation, TermIndexPageInformation},
     TermImpact,
 };
@@ -582,7 +582,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
     }
 }
 
-impl BlockTermImpactIndex for SparseBuilderIndex {
+impl SparseIndex for SparseBuilderIndex {
     fn iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }

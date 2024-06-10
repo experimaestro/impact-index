@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{
-    index::{BlockTermImpactIndex, BlockTermImpactIterator},
+    index::{BlockTermImpactIterator, SparseIndex},
     save_index,
     transforms::IndexTransform,
     IndexLoader, TermImpact,
@@ -416,7 +416,7 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
     }
 }
 
-impl BlockTermImpactIndex for CompressedIndex {
+impl SparseIndex for CompressedIndex {
     fn iterator(
         &self,
         term_ix: crate::base::TermIndex,
@@ -441,7 +441,7 @@ impl IndexTransform for CompressionTransform {
     /// # Arguments
     ///
     /// - max_block_size: maximum number of records per block
-    fn process(self, path: &Path, index: &dyn BlockTermImpactIndex) -> Result<(), std::io::Error> {
+    fn process(self, path: &Path, index: &dyn SparseIndex) -> Result<(), std::io::Error> {
         // File for impact values
         let mut impact_writer = File::options()
             .write(true)
@@ -568,7 +568,7 @@ struct CompressedIndexLoader {
 #[typetag::serde]
 impl IndexLoader for CompressedIndexLoader {
     /// Loads a block-based index
-    fn into_index(self: Box<Self>, path: &Path, in_memory: bool) -> Box<dyn BlockTermImpactIndex> {
+    fn into_index(self: Box<Self>, path: &Path, in_memory: bool) -> Box<dyn SparseIndex> {
         // No load the view
         let docid_path = path.join(format!("docids.dat"));
         let impact_path = path.join(format!("impacts.dat"));

@@ -12,7 +12,7 @@ use crate::{
 use crate::base::TermIndex;
 
 use super::{
-    index::{BlockTermImpactIndex, BlockTermImpactIterator},
+    index::{BlockTermImpactIterator, SparseIndex},
     TermImpact,
 };
 
@@ -66,7 +66,7 @@ impl MaxScoreTermIterator<'_> {
  * (algorithm 1 in Accelerating Learned Sparse Indexes Via Term Impact Decomposition, Mackenzie et al., 2022)
  */
 pub fn search_maxscore<'a>(
-    index: &'a dyn BlockTermImpactIndex,
+    index: &'a dyn SparseIndex,
     query: &HashMap<TermIndex, ImpactValue>,
     top_k: usize,
 ) -> Vec<ScoredDocument> {
