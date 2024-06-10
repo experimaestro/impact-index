@@ -287,7 +287,7 @@ impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
 }
 
 impl SparseBuilderIndex {
-    fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
+    pub fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
         Self {
             terms: terms,
             buffer: if in_memory {

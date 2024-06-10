@@ -74,9 +74,10 @@ impl IndexInformation {
 
 /// Generic trait for block-based term impact iterators
 pub trait BlockTermImpactIterator: Send {
-    /// Moves to the next document whose id is greater or equal than doc_id
-    /// The move can be "shallow", i.e. no need to actually hold a record:
-    /// this is used by the BMW algorithm
+    /// Moves to the next document whose id is greater or equal than doc_id.
+    ///
+    ///  The move can be "shallow", i.e. the index is read when any function
+    /// that involves actual posting is invoked
     fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
 
     /// Returns the current term impact (can panic)
@@ -85,10 +86,10 @@ pub trait BlockTermImpactIterator: Send {
     /// Returns the term maximum impact
     fn max_value(&self) -> ImpactValue;
 
-    /// Returns the maximum and minimum document ID
+    /// Returns the maximum document ID
     fn max_doc_id(&self) -> DocId;
 
-    /// Max block document ID (by default, returns the maximum over all impacts)
+    /// Max block impact value (by default, returns the maximum over all impacts)
     fn max_block_value(&self) -> ImpactValue {
         // If just one block...
         self.max_value()
@@ -99,7 +100,7 @@ pub trait BlockTermImpactIterator: Send {
         0
     }
 
-    /// Max block document ID (by default, returns the maximum over all impacts)
+    /// Max block document ID (by default, returns the maximum over all doc IDs)
     fn max_block_doc_id(&self) -> DocId {
         // If just one block...
         self.max_doc_id()
@@ -154,24 +155,5 @@ impl<'a> Iterator for ValueIterator<'a> {
 
     fn max(self) -> Option<Self::Item> {
         return Some(self.iterator.max_value());
-    }
-}
-
-struct DocIdIterator<'a> {
-    iterator: Box<dyn BlockTermImpactIterator + 'a>,
-}
-impl<'a> Iterator for DocIdIterator<'a> {
-    type Item = DocId;
-
-    fn next(&mut self) -> Option<DocId> {
-        if let Some(ti) = self.iterator.next() {
-            Some(ti.docid)
-        } else {
-            None
-        }
-    }
-
-    fn max(self) -> Option<Self::Item> {
-        return Some(self.iterator.max_doc_id());
     }
 }

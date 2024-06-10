@@ -10,7 +10,9 @@ use std::{
 
 use super::{
     index::{BlockTermImpactIndex, BlockTermImpactIterator},
-    TermImpact,
+    save_index,
+    transforms::IndexTransform,
+    IndexLoader, TermImpact,
 };
 use crate::{
     base::{DocId, ImpactValue, TermIndex},
@@ -192,6 +194,7 @@ impl<'a> CompressedIndexIterator<'a> {
         false
     }
 
+    /// Initialize the iterators for a given block
     fn read_block(&mut self, info: &TermBlockInformation) {
         let slice = self.sparse_index.docid_buffer.slice(
             info.docid_position_range.0 as usize,
@@ -216,6 +219,7 @@ impl<'a> CompressedIndexIterator<'a> {
         self.impact_iterator = Some(value_iterator);
     }
 
+    /// Moves to the next block
     fn next_block(&mut self) {
         self.info = self.info_iter.next();
         self.docid_iterator = None;
@@ -425,173 +429,161 @@ impl BlockTermImpactIndex for CompressedIndex {
     }
 }
 
-/// Compress the impact values
-///
-/// # Arguments
-///
-/// - max_block_size: maximum number of records per block
-pub fn compress(
-    path: &Path,
-    index: &dyn BlockTermImpactIndex,
-    max_block_size: usize,
-    doc_ids_compressor: Box<dyn DocIdCompressor>,
-    values_compressor: Box<dyn ValueCompressor>,
-) -> Result<(), std::io::Error> {
-    // path.is_dir()
-
-    // File for impact values
-    let mut impact_writer = File::options()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(path.join("impacts.dat"))
-        .expect("Could not create the values file");
-
-    // File for document IDs
-    let mut docid_writer = File::options()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(path.join("docids.dat"))
-        .expect("Could not create the document IDs file");
-
-    // Global information
-    let mut information = CompressedIndexInformation {
-        terms: Vec::new(),
-        doc_ids_compressor: doc_ids_compressor,
-        values_compressor: values_compressor,
-    };
-
-    let mut impact_position = 0;
-    let mut docid_position = 0;
-
-    // Iterate over terms
-    for term_ix in 0..index.length() {
-        // Read everything
-        let mut it = index.iterator(term_ix);
-        let mut flag = true;
-
-        let mut term_information = TermBlocksInformation {
-            pages: Vec::new(),
-            max_value: 0f32,
-            max_doc_id: 0,
-            length: 0,
-        };
-
-        let mut max_doc_id = 0;
-
-        while flag {
-            // Read up to max_block_size records
-            let mut impacts = Vec::new();
-            let mut docids = Vec::<DocId>::new();
-            flag = false;
-
-            let mut min_doc_id: DocId = DocId::MAX;
-
-            while let Some(ti) = it.next() {
-                if min_doc_id == DocId::MAX {
-                    min_doc_id = ti.docid;
-                }
-                assert!(
-                    (ti.docid > max_doc_id) || (max_doc_id == 0),
-                    "{} is not greater than {}",
-                    ti.docid,
-                    max_doc_id
-                );
-                max_doc_id = ti.docid;
-
-                docids.push(ti.docid);
-                impacts.push(ti.value);
-                if docids.len() == max_block_size {
-                    flag = true;
-                    break;
-                }
-            }
-
-            let mut block_term_information = TermBlockInformation {
-                docid_position_range: (docid_position, 0),
-                impact_position_range: (impact_position, 0),
-                length: impacts.len(),
-                max_value: impacts.iter().fold(0f32, |cur, x| cur.max(*x)),
-                min_doc_id: min_doc_id,
-                max_doc_id: max_doc_id,
-            };
-
-            // Write
-            information.doc_ids_compressor.write(
-                &mut docid_writer,
-                &docids,
-                &block_term_information,
-            );
-            information.values_compressor.write(
-                &mut impact_writer,
-                &impacts,
-                &block_term_information,
-            );
-
-            // Sets the end of the byte streams
-            docid_position = docid_writer.stream_position()?;
-            block_term_information.docid_position_range.1 = docid_position;
-
-            impact_position = impact_writer.stream_position()?;
-            block_term_information.impact_position_range.1 = impact_position;
-
-            // Update global term statistics
-            term_information.max_value = term_information
-                .max_value
-                .max(block_term_information.max_value);
-            term_information.max_doc_id = term_information
-                .max_doc_id
-                .max(block_term_information.max_doc_id);
-            term_information.length += block_term_information.length;
-            term_information.pages.push(block_term_information);
-        }
-
-        information.terms.push(term_information);
-    }
-
-    // Serialize the overall structure
-    let info_path = path.join("information.cbor");
-    let info_path_s = info_path.display().to_string();
-
-    let info_file = File::options()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(info_path)
-        .expect(&format!("Error while creating file {}", info_path_s));
-
-    ciborium::ser::into_writer(&information, info_file)
-        .expect("Error saving compressed term index information");
-
-    Ok(())
+pub struct CompressionTransform {
+    pub max_block_size: usize,
+    pub doc_ids_compressor: Box<dyn DocIdCompressor>,
+    pub impacts_compressor: Box<dyn ValueCompressor>,
 }
 
-/// Loads a block-based index
-pub fn load_compressed_index(path: &Path, in_memory: bool) -> CompressedIndex {
-    let info_path = path.join(format!("information.cbor"));
-    let info_file = File::options()
-        .read(true)
-        .open(info_path)
-        .expect("Error while creating file");
+impl IndexTransform for CompressionTransform {
+    /// Compress the impact values
+    ///
+    /// # Arguments
+    ///
+    /// - max_block_size: maximum number of records per block
+    fn process(self, path: &Path, index: &dyn BlockTermImpactIndex) -> Result<(), std::io::Error> {
+        // File for impact values
+        let mut impact_writer = File::options()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path.join("impacts.dat"))
+            .expect("Could not create the values file");
 
-    let information = ciborium::de::from_reader(info_file)
-        .expect("Error loading compressed term index information");
+        // File for document IDs
+        let mut docid_writer = File::options()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(path.join("docids.dat"))
+            .expect("Could not create the document IDs file");
 
-    // No load the view
-    let docid_path = path.join(format!("docids.dat"));
-    let impact_path = path.join(format!("impacts.dat"));
-    CompressedIndex {
-        information: information,
-        docid_buffer: if in_memory {
-            Box::new(MemoryBuffer::new(&docid_path))
-        } else {
-            Box::new(MmapBuffer::new(&docid_path))
-        },
-        impact_buffer: if in_memory {
-            Box::new(MemoryBuffer::new(&impact_path))
-        } else {
-            Box::new(MmapBuffer::new(&impact_path))
-        },
+        // Global information
+        let mut index_loader = CompressedIndexLoader {
+            information: CompressedIndexInformation {
+                terms: Vec::new(),
+                doc_ids_compressor: self.doc_ids_compressor,
+                values_compressor: self.impacts_compressor,
+            },
+        };
+
+        let mut impact_position = 0;
+        let mut docid_position = 0;
+
+        // Iterate over terms
+        for term_ix in 0..index.length() {
+            // Read everything
+            let mut it = index.iterator(term_ix);
+            let mut flag = true;
+
+            let mut term_information = TermBlocksInformation {
+                pages: Vec::new(),
+                max_value: 0f32,
+                max_doc_id: 0,
+                length: 0,
+            };
+
+            let mut max_doc_id = 0;
+
+            while flag {
+                // Read up to max_block_size records
+                let mut impacts = Vec::new();
+                let mut docids = Vec::<DocId>::new();
+                flag = false;
+
+                let mut min_doc_id: DocId = DocId::MAX;
+
+                while let Some(ti) = it.next() {
+                    if min_doc_id == DocId::MAX {
+                        min_doc_id = ti.docid;
+                    }
+                    assert!(
+                        (ti.docid > max_doc_id) || (max_doc_id == 0),
+                        "{} is not greater than {}",
+                        ti.docid,
+                        max_doc_id
+                    );
+                    max_doc_id = ti.docid;
+
+                    docids.push(ti.docid);
+                    impacts.push(ti.value);
+                    if docids.len() == self.max_block_size {
+                        flag = true;
+                        break;
+                    }
+                }
+
+                let mut block_term_information = TermBlockInformation {
+                    docid_position_range: (docid_position, 0),
+                    impact_position_range: (impact_position, 0),
+                    length: impacts.len(),
+                    max_value: impacts.iter().fold(0f32, |cur, x| cur.max(*x)),
+                    min_doc_id: min_doc_id,
+                    max_doc_id: max_doc_id,
+                };
+
+                // Write
+                index_loader.information.doc_ids_compressor.write(
+                    &mut docid_writer,
+                    &docids,
+                    &block_term_information,
+                );
+                index_loader.information.values_compressor.write(
+                    &mut impact_writer,
+                    &impacts,
+                    &block_term_information,
+                );
+
+                // Sets the end of the byte streams
+                docid_position = docid_writer.stream_position()?;
+                block_term_information.docid_position_range.1 = docid_position;
+
+                impact_position = impact_writer.stream_position()?;
+                block_term_information.impact_position_range.1 = impact_position;
+
+                // Update global term statistics
+                term_information.max_value = term_information
+                    .max_value
+                    .max(block_term_information.max_value);
+                term_information.max_doc_id = term_information
+                    .max_doc_id
+                    .max(block_term_information.max_doc_id);
+                term_information.length += block_term_information.length;
+                term_information.pages.push(block_term_information);
+            }
+
+            index_loader.information.terms.push(term_information);
+        }
+
+        // Serialize the overall structure
+        save_index(Box::new(index_loader), path)
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct CompressedIndexLoader {
+    information: CompressedIndexInformation,
+}
+
+#[typetag::serde]
+impl IndexLoader for CompressedIndexLoader {
+    /// Loads a block-based index
+    fn into_index(self: Box<Self>, path: &Path, in_memory: bool) -> Box<dyn BlockTermImpactIndex> {
+        // No load the view
+        let docid_path = path.join(format!("docids.dat"));
+        let impact_path = path.join(format!("impacts.dat"));
+        Box::new(CompressedIndex {
+            information: self.information,
+            docid_buffer: if in_memory {
+                Box::new(MemoryBuffer::new(&docid_path))
+            } else {
+                Box::new(MmapBuffer::new(&docid_path))
+            },
+            impact_buffer: if in_memory {
+                Box::new(MemoryBuffer::new(&impact_path))
+            } else {
+                Box::new(MmapBuffer::new(&impact_path))
+            },
+        })
     }
 }

@@ -5,11 +5,11 @@ use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
         builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
-        compress::{
-            compress, docid::EliasFanoCompressor, impact::Quantizer, load_compressed_index,
-        },
+        compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
         index::{BlockTermImpactIndex, BlockTermImpactIterator},
+        load_index,
         maxscore::search_maxscore,
+        transforms::IndexTransform,
         wand::search_wand,
         SearchFn, TermImpact,
     },
@@ -312,20 +312,19 @@ fn test_compressed_index() {
     let index = data.indexer.to_index(true);
 
     let dir = TempDir::new().expect("Could not create temporary directory");
-    let docid_compressor = Box::new(EliasFanoCompressor {});
-    let impact_compressor = Box::new(Quantizer::new(4, 0., 5.));
     let step = 5. / ((2 << 4) as f64);
 
-    compress(
-        dir.path(),
-        &index,
-        1024,
-        docid_compressor,
-        impact_compressor,
-    )
-    .expect("An error occurred");
+    let transform = CompressionTransform {
+        max_block_size: 1024,
+        doc_ids_compressor: Box::new(EliasFanoCompressor {}),
+        impacts_compressor: Box::new(Quantizer::new(4, 0., 5.)),
+    };
 
-    let c_index = load_compressed_index(dir.path(), true);
+    transform
+        .process(dir.path(), &index)
+        .expect("An error occurred");
+
+    let c_index = load_index(dir.path(), true);
 
     check_same_index(
         c_index.iterator(0).as_mut(),

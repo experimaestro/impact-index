@@ -1,18 +1,10 @@
 //! Methods for compressing impact values
 
-use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
-use std::{
-    cell::RefCell,
-    fmt,
-    fs::File,
-    io::{Read, Seek, Write},
-    path::Path,
-};
+use std::io::Write;
 
-use super::{
-    BlockTermImpactIndex, BlockTermImpactIterator, Compressor, TermBlockInformation,
-    ValueCompressor,
-};
+use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
+
+use super::{Compressor, TermBlockInformation, ValueCompressor};
 use crate::{
     base::ImpactValue,
     utils::buffer::{Slice, SliceReader},
