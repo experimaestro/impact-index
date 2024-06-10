@@ -119,7 +119,7 @@ pub trait BlockTermImpactIterator: Send {
     }
 }
 
-pub trait BlockTermImpactIndex {
+pub trait BlockTermImpactIndex: Send + Sync {
     /// Returns an iterator for a given term
     ///
     /// ## Arguments

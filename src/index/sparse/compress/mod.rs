@@ -70,7 +70,7 @@ impl std::fmt::Display for TermBlockInformation {
 // ---- Compression ---
 //
 
-pub trait Compressor<T> {
+pub trait Compressor<T>: Sync + Send {
     fn write(&self, writer: &mut dyn Write, values: &[T], info: &TermBlockInformation);
     fn read<'a>(
         &self,
@@ -80,10 +80,10 @@ pub trait Compressor<T> {
 }
 
 #[typetag::serde(tag = "type")]
-pub trait DocIdCompressor: Compressor<DocId> + Sync {}
+pub trait DocIdCompressor: Compressor<DocId> {}
 
 #[typetag::serde(tag = "type")]
-pub trait ValueCompressor: Compressor<ImpactValue> + Sync {}
+pub trait ValueCompressor: Compressor<ImpactValue> {}
 
 /// Block-based index information for a term
 #[derive(Serialize, Deserialize)]

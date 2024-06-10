@@ -4,7 +4,7 @@ use rstest::rstest;
 use xpmir_rust::{
     base::{ImpactValue, TermIndex},
     index::sparse::{
-        builder::{load_forward_index, Indexer, SparseBuilderIndexTrait},
+        builder::{load_forward_index, Indexer},
         compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
         index::{BlockTermImpactIndex, BlockTermImpactIterator},
         load_index,
@@ -151,7 +151,9 @@ fn test_index() {
             None => Box::new([].iter()),
         };
 
-        for (ix, observed) in index.iter(term_ix).enumerate() {
+        let mut term_iterator = index.iterator(term_ix);
+        let mut ix = 0;
+        while let Some(observed) = term_iterator.next() {
             let expected = iter.next().expect(&format!(
                 "The index has too many elements for term {}",
                 term_ix
@@ -168,6 +170,7 @@ fn test_index() {
                 term_ix,
                 ix
             );
+            ix += 1;
             assert!(expected.value == observed.value);
         }
     }

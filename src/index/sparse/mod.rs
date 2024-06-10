@@ -5,7 +5,7 @@ use std::{fs::File, path::Path};
 use crate::base::{DocId, ImpactValue, TermIndex};
 use crate::search::ScoredDocument;
 use builder::load_forward_index;
-use index::BlockTermImpactIndex;
+use index::{BlockTermImpactIndex, BlockTermImpactIterator};
 use serde::{Deserialize, Serialize};
 
 pub mod builder;
@@ -33,7 +33,7 @@ impl std::fmt::Display for TermImpact {
 }
 
 /// An iterator on term impacts
-pub type TermImpactIterator<'a> = Box<dyn Iterator<Item = TermImpact> + 'a + Send>;
+pub type TermImpactIterator<'a> = Box<dyn BlockTermImpactIterator + 'a + Send>;
 
 /// A search function
 pub type SearchFn = fn(

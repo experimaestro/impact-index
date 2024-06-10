@@ -12,7 +12,7 @@ use ndarray::{ArrayBase, Data, Ix1};
 use super::{
     index::{BlockTermImpactIndex, BlockTermImpactIterator},
     index::{IndexInformation, TermIndexPageInformation},
-    TermImpact, TermImpactIterator,
+    TermImpact,
 };
 use crate::utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice};
 use crate::{
@@ -276,18 +276,8 @@ pub struct SparseBuilderIndex {
     buffer: Box<dyn Buffer>,
 }
 
-impl<'a> SparseBuilderIndexTrait<'a> for SparseBuilderIndex {
-    fn term_count(&self) -> usize {
-        self.terms.len()
-    }
-
-    fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a> {
-        Box::new(SparseBuilderIndexIterator::new(self, term_ix))
-    }
-}
-
 impl SparseBuilderIndex {
-    pub fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
+    fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
         Self {
             terms: terms,
             buffer: if in_memory {
@@ -312,12 +302,6 @@ pub fn load_forward_index(path: &Path, in_memory: bool) -> SparseBuilderIndex {
     let postings_path = path.join(format!("postings.dat"));
 
     SparseBuilderIndex::new(ti.terms, &postings_path, in_memory)
-}
-
-/// Forward Index trait
-pub trait SparseBuilderIndexTrait<'a> {
-    fn term_count(&self) -> usize;
-    fn iter(&'a self, term_ix: TermIndex) -> TermImpactIterator<'a>;
 }
 
 pub struct SparseBuilderIndexIterator<'a> {
@@ -604,6 +588,6 @@ impl BlockTermImpactIndex for SparseBuilderIndex {
     }
 
     fn length(&self) -> usize {
-        return self.term_count();
+        return self.terms.len();
     }
 }
