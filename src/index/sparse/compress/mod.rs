@@ -9,7 +9,7 @@ use std::{
 };
 
 use super::{
-    index::{BlockTermImpactIterator, SparseIndex},
+    index::{BlockTermImpactIterator, SparseIndex, SparseIndexView},
     save_index,
     transforms::IndexTransform,
     IndexLoader, TermImpact,
@@ -80,10 +80,14 @@ pub trait Compressor<T>: Sync + Send {
 }
 
 #[typetag::serde(tag = "type")]
-pub trait DocIdCompressor: Compressor<DocId> {}
+pub trait DocIdCompressor: Compressor<DocId> {
+    fn clone(&self) -> Box<dyn DocIdCompressor>;
+}
 
 #[typetag::serde(tag = "type")]
-pub trait ValueCompressor: Compressor<ImpactValue> {}
+pub trait ImpactCompressor: Compressor<ImpactValue> {
+    fn clone(&self) -> Box<dyn ImpactCompressor>;
+}
 
 /// Block-based index information for a term
 #[derive(Serialize, Deserialize)]
@@ -99,7 +103,7 @@ pub struct TermBlocksInformation {
 pub struct CompressedIndexInformation {
     pub terms: Vec<TermBlocksInformation>,
     doc_ids_compressor: Box<dyn DocIdCompressor>,
-    values_compressor: Box<dyn ValueCompressor>,
+    values_compressor: Box<dyn ImpactCompressor>,
 }
 
 pub struct CompressedIndex {
@@ -432,7 +436,7 @@ impl SparseIndex for CompressedIndex {
 pub struct CompressionTransform {
     pub max_block_size: usize,
     pub doc_ids_compressor: Box<dyn DocIdCompressor>,
-    pub impacts_compressor: Box<dyn ValueCompressor>,
+    pub impacts_compressor: Box<dyn ImpactCompressor>,
 }
 
 impl IndexTransform for CompressionTransform {
@@ -441,7 +445,7 @@ impl IndexTransform for CompressionTransform {
     /// # Arguments
     ///
     /// - max_block_size: maximum number of records per block
-    fn process(self, path: &Path, index: &dyn SparseIndex) -> Result<(), std::io::Error> {
+    fn process(&self, path: &Path, index: &dyn SparseIndexView) -> Result<(), std::io::Error> {
         // File for impact values
         let mut impact_writer = File::options()
             .write(true)
@@ -462,8 +466,8 @@ impl IndexTransform for CompressionTransform {
         let mut index_loader = CompressedIndexLoader {
             information: CompressedIndexInformation {
                 terms: Vec::new(),
-                doc_ids_compressor: self.doc_ids_compressor,
-                values_compressor: self.impacts_compressor,
+                doc_ids_compressor: self.doc_ids_compressor.clone(),
+                values_compressor: self.impacts_compressor.clone(),
             },
         };
 
@@ -513,6 +517,11 @@ impl IndexTransform for CompressionTransform {
                     }
                 }
 
+                // Stop if no more IDs
+                if docids.len() == 0 {
+                    break;
+                }
+
                 let mut block_term_information = TermBlockInformation {
                     docid_position_range: (docid_position, 0),
                     impact_position_range: (impact_position, 0),
@@ -523,6 +532,12 @@ impl IndexTransform for CompressionTransform {
                 };
 
                 // Write
+                assert!(
+                    max_doc_id >= min_doc_id,
+                    "Maximum doc id ({}) should be greater than minimum ({})",
+                    max_doc_id,
+                    min_doc_id
+                );
                 index_loader.information.doc_ids_compressor.write(
                     &mut docid_writer,
                     &docids,

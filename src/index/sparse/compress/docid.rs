@@ -12,7 +12,11 @@ use sucds::{EliasFano, EliasFanoBuilder, Searial};
 pub struct EliasFanoCompressor {}
 
 #[typetag::serde]
-impl DocIdCompressor for EliasFanoCompressor {}
+impl DocIdCompressor for EliasFanoCompressor {
+    fn clone(&self) -> Box<dyn DocIdCompressor> {
+        Box::new(EliasFanoCompressor {})
+    }
+}
 
 #[self_referencing]
 struct EliasFanoIterator {

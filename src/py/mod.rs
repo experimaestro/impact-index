@@ -11,11 +11,9 @@ fn xpmir_rust(_py: Python, m: &PyModule) -> PyResult<()> {
     debug!("Loading xpmir-rust extension");
 
     // Index submodule
-    let submod = PyModule::new(_py, "index")?;
-    m.add_submodule(submod)?;
-
-    submod.add_class::<sparse::PySparseIndexer>()?;
-    submod.add_class::<sparse::PySparseIndex>()?;
+    let module = PyModule::new(_py, "sparse")?;
+    sparse::init(module)?;
+    m.add_submodule(module)?;
 
     Ok(())
 }

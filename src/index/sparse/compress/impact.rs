@@ -4,14 +4,14 @@ use std::io::Write;
 
 use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
 
-use super::{Compressor, TermBlockInformation, ValueCompressor};
+use super::{Compressor, ImpactCompressor, TermBlockInformation};
 use crate::{
     base::ImpactValue,
     utils::buffer::{Slice, SliceReader},
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 
 pub struct Quantizer {
     pub nbits: u32,
@@ -59,7 +59,11 @@ impl<'a> Iterator for QuantizerIterator<'a> {
 }
 
 #[typetag::serde]
-impl ValueCompressor for Quantizer {}
+impl ImpactCompressor for Quantizer {
+    fn clone(&self) -> Box<dyn ImpactCompressor> {
+        Box::new(Clone::clone(self))
+    }
+}
 
 impl<'a> Compressor<ImpactValue> for Quantizer {
     fn write(&self, writer: &mut dyn Write, values: &[ImpactValue], _info: &TermBlockInformation) {

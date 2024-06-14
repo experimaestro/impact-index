@@ -42,6 +42,7 @@ memmap2 = "0.5.8"
 self_cell = "0.10.2"
 ouroboros = "0.15"
 bitstream-io = "2.3"
+intertrait = "0.2.2"
 
 [dev-dependencies]
 criterion = "0.4.0"

@@ -77,23 +77,23 @@ pub fn search_maxscore<'a>(
     let mut theta: f64;
 
     for (&ix, &weight) in query.iter() {
-        let iterator = index.iterator(ix);
+        for iterator in index.iterators(ix) {
+            let max_value = ((&iterator).max_value() * weight) as f64;
 
-        let max_value = ((&iterator).max_value() * weight) as f64;
+            let mut wrapper = MaxScoreTermIterator {
+                iterator: iterator,
+                query_weight: weight,
+                term_index: ix,
+                impact: TermImpact {
+                    value: 0.,
+                    docid: 0,
+                },
+                max_value: max_value,
+            };
 
-        let mut wrapper = MaxScoreTermIterator {
-            iterator: iterator,
-            query_weight: weight,
-            term_index: ix,
-            impact: TermImpact {
-                value: 0.,
-                docid: 0,
-            },
-            max_value: max_value,
-        };
-
-        if wrapper.next() {
-            active.push(wrapper);
+            if wrapper.next() {
+                active.push(wrapper);
+            }
         }
     }
 

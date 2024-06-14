@@ -1,9 +1,10 @@
 use std::path::Path;
 
-use super::index::SparseIndex;
+pub mod split;
+use super::index::SparseIndexView;
 
 /// Trait for all transforms
 pub trait IndexTransform {
     /// Transforms the index
-    fn process(self, path: &Path, index: &dyn SparseIndex) -> Result<(), std::io::Error>;
+    fn process(&self, path: &Path, index: &dyn SparseIndexView) -> Result<(), std::io::Error>;
 }
