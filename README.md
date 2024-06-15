@@ -1,5 +1,3 @@
-# Experimaestro Information Retrieval (rust library)
+# Impact Index for Information Retrieval
 
-This package contains implementations in Rust of several key components of the Experimaestro IR library:
-
-- Sparse indexing: given a list of (term/impact) for each document, build/query an efficient structure
+This package is a library that implements efficient algorithms for sparse representations from neural information retrieval systems. Contrarily to other libraries, this one specifically targets neural IR models, and does not suppose any quantization. It also does not implement "standard" IR algorithms based on term frequencies.
