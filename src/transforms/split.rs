@@ -2,13 +2,11 @@
 
 use std::sync::Mutex;
 
-use crate::base::{ImpactValue, Len, TermIndex};
-use crate::index::sparse::index::SparseIndexView;
-use crate::index::sparse::TermImpactIterator;
-use crate::index::sparse::{
+use crate::base::{ImpactValue, Len, TermImpact, TermIndex};
+use crate::index::SparseIndexView;
+use crate::{
     index::{BlockTermImpactIterator, SparseIndex},
     transforms::IndexTransform,
-    TermImpact,
 };
 
 use serde::{Deserialize, Serialize};

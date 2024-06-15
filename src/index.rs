@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::base::{DocId, ImpactValue, Len, TermIndex};
 
-use super::TermImpact;
+use crate::base::TermImpact;
 
 #[derive(Serialize, Deserialize)]
 pub struct TermIndexPageInformation {

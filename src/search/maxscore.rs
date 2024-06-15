@@ -5,16 +5,14 @@ use std::collections::HashMap;
 use log::debug;
 
 use crate::{
-    base::{DocId, ImpactValue},
+    base::{DocId, ImpactValue, TermImpact},
+    index::SparseIndex,
     search::{ScoredDocument, TopScoredDocuments},
 };
 
 use crate::base::TermIndex;
 
-use super::{
-    index::{BlockTermImpactIterator, SparseIndex},
-    TermImpact,
-};
+use crate::index::BlockTermImpactIterator;
 
 struct MaxScoreTermIterator<'a> {
     iterator: Box<dyn BlockTermImpactIterator + 'a>,

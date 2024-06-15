@@ -3,12 +3,14 @@ use std::collections::HashMap;
 use criterion::{criterion_group, criterion_main, Criterion};
 
 use helpers::documents::{create_document, document_vectors};
+use impact_index::{
+    base::SearchFn,
+    builder::Indexer,
+    search::{maxscore::search_maxscore, wand::search_wand},
+};
 use log::info;
 use rand::thread_rng;
 use temp_dir::TempDir;
-use xpmir_rust::index::sparse::{
-    builder::Indexer, maxscore::search_maxscore, wand::search_wand, SearchFn,
-};
 
 fn benchmark(c: &mut Criterion, name: &str, search_fn: SearchFn) {
     let mut rng = thread_rng();

@@ -477,6 +477,39 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9a3a5bfb195931eeb336b2a7b4d761daec841b97f947d34394601737a7bba5e4"
 
 [[package]]
+name = "impact-index"
+version = "0.22.0"
+dependencies = [
+ "bitstream-io",
+ "byteorder",
+ "ciborium",
+ "criterion",
+ "env_logger",
+ "helpers",
+ "intertrait",
+ "log",
+ "memmap2",
+ "ndarray",
+ "ntest",
+ "numpy",
+ "ouroboros",
+ "pyo3",
+ "pyo3-asyncio",
+ "pyo3-build-config",
+ "pyo3-log",
+ "rand",
+ "rand_distr",
+ "rstest",
+ "self_cell",
+ "serde",
+ "simple-error",
+ "sucds",
+ "temp-dir",
+ "tokio",
+ "typetag",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1775,36 +1808,3 @@ name = "windows_x86_64_msvc"
 version = "0.52.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32b752e52a2da0ddfbdbcc6fceadfeede4c939ed16d13e648833a61dfb611ed8"
-
-[[package]]
-name = "xpmir-rust"
-version = "0.22.0"
-dependencies = [
- "bitstream-io",
- "byteorder",
- "ciborium",
- "criterion",
- "env_logger",
- "helpers",
- "intertrait",
- "log",
- "memmap2",
- "ndarray",
- "ntest",
- "numpy",
- "ouroboros",
- "pyo3",
- "pyo3-asyncio",
- "pyo3-build-config",
- "pyo3-log",
- "rand",
- "rand_distr",
- "rstest",
- "self_cell",
- "serde",
- "simple-error",
- "sucds",
- "temp-dir",
- "tokio",
- "typetag",
-]

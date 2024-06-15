@@ -10,12 +10,10 @@ use std::{
 
 use super::{
     index::{BlockTermImpactIterator, SparseIndex, SparseIndexView},
-    save_index,
     transforms::IndexTransform,
-    IndexLoader, TermImpact,
 };
 use crate::{
-    base::{DocId, ImpactValue, Len, TermIndex},
+    base::{save_index, DocId, ImpactValue, IndexLoader, Len, TermImpact, TermIndex},
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
 use log::debug;

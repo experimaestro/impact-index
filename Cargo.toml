@@ -1,5 +1,5 @@
 [package]
-name = "xpmir-rust"
+name = "impact-index"
 version = "0.22.0"
 edition = "2021"
 authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
@@ -7,7 +7,7 @@ license = "GPL-2.0-or-later"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
-name = "xpmir_rust"
+name = "impact_index"
 crate-type = ["cdylib", "rlib"]
 bench = false
 test = false

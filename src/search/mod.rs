@@ -1,3 +1,6 @@
+pub mod maxscore;
+pub mod wand;
+
 use std::{cmp::Ordering, collections::BinaryHeap};
 
 use crate::base::{DocId, ImpactValue};

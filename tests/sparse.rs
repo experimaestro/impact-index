@@ -1,23 +1,19 @@
+use impact_index::{
+    base::{load_index, ImpactValue, TermImpact, TermIndex},
+    builder::Indexer,
+    compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
+    index::{BlockTermImpactIterator, SparseIndex},
+    search::{ScoredDocument, TopScoredDocuments},
+    transforms::IndexTransform,
+};
 use log::{debug, info};
 use ntest::assert_about_eq;
 use rstest::rstest;
-use xpmir_rust::{
-    base::{ImpactValue, TermIndex},
-    index::sparse::{
-        builder::{load_forward_index, Indexer},
-        compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
-        index::{BlockTermImpactIterator, SparseIndex},
-        load_index,
-        maxscore::search_maxscore,
-        transforms::IndexTransform,
-        wand::search_wand,
-        SearchFn, TermImpact,
-    },
-    search::{ScoredDocument, TopScoredDocuments},
-};
 
 use helpers::documents::{create_document, document_vectors, TestDocument};
 
+use impact_index::base::SearchFn;
+use impact_index::search::{maxscore::search_maxscore, wand::search_wand};
 use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
 use temp_dir::TempDir;
@@ -233,6 +229,8 @@ fn test_search(
     #[case] seed: Option<u64>,
     #[values(search_wand, search_maxscore)] search_fn: SearchFn,
 ) {
+    use impact_index::builder::load_forward_index;
+
     init_logger();
     // std::env::set_var("RUST_LOG", "trace");
     debug!("Search test start");

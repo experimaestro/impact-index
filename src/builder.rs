@@ -12,15 +12,14 @@ use ndarray::{ArrayBase, Data, Ix1};
 use super::{
     index::{BlockTermImpactIterator, SparseIndex},
     index::{IndexInformation, TermIndexPageInformation},
-    TermImpact,
-};
-use crate::{
-    base::Len,
-    utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
 use crate::{
     base::{BoxResult, DocId, ImpactValue, TermIndex},
-    index::sparse::index::TermIndexInformation,
+    index::TermIndexInformation,
+};
+use crate::{
+    base::{Len, TermImpact},
+    utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
 
 /*

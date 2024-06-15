@@ -9,16 +9,16 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
 
-use crate::index::sparse::compress;
-use crate::index::sparse::transforms;
+use crate::compress;
 
+use crate::base::load_index;
 use crate::base::{DocId, ImpactValue, TermIndex};
-use crate::index::sparse::index::{SparseIndex, SparseIndexView};
-use crate::index::sparse::load_index;
-use crate::index::sparse::maxscore::search_maxscore;
-use crate::index::sparse::transforms::IndexTransform;
-use crate::index::sparse::{
-    builder::Indexer as SparseIndexer, wand::search_wand, SearchFn, TermImpactIterator,
+use crate::index::SparseIndex;
+use crate::search::maxscore::search_maxscore;
+use crate::transforms::IndexTransform;
+use crate::{
+    base::SearchFn, base::TermImpactIterator, builder::Indexer as SparseIndexer,
+    search::wand::search_wand,
 };
 
 use numpy::PyArray1;
