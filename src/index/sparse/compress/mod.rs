@@ -15,7 +15,7 @@ use super::{
     IndexLoader, TermImpact,
 };
 use crate::{
-    base::{DocId, ImpactValue, TermIndex},
+    base::{DocId, ImpactValue, Len, TermIndex},
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
 use log::debug;
@@ -421,14 +421,16 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
 }
 
 impl SparseIndex for CompressedIndex {
-    fn iterator(
+    fn block_iterator(
         &self,
         term_ix: crate::base::TermIndex,
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         Box::new(CompressedBlockTermImpactIterator::new(self, term_ix))
     }
+}
 
-    fn length(&self) -> usize {
+impl Len for CompressedIndex {
+    fn len(&self) -> usize {
         self.information.terms.len()
     }
 }
@@ -475,7 +477,7 @@ impl IndexTransform for CompressionTransform {
         let mut docid_position = 0;
 
         // Iterate over terms
-        for term_ix in 0..index.length() {
+        for term_ix in 0..index.len() {
             // Read everything
             let mut it = index.iterator(term_ix);
             let mut flag = true;

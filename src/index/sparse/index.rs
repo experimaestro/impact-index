@@ -4,7 +4,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::base::{DocId, ImpactValue, TermIndex};
+use crate::base::{DocId, ImpactValue, Len, TermIndex};
 
 use super::TermImpact;
 
@@ -73,12 +73,9 @@ impl IndexInformation {
 }
 
 /// A very simple
-pub trait SparseIndexView: Send + Sync {
+pub trait SparseIndexView: Send + Sync + Len {
     /// Basic iterator
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'a>;
-
-    /// Returns the number of terms in the index
-    fn length(&self) -> usize;
 }
 
 /// Generic trait for block-based term impact iterators
@@ -131,36 +128,23 @@ impl<'a> Iterator for dyn BlockTermImpactIterator + 'a {
     }
 }
 
-pub trait SparseIndex: Send + Sync {
+pub trait AsSparseIndexView {
+    fn as_view(&self) -> &dyn SparseIndexView;
+}
+
+pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
     /// Returns an iterator for a given term
     ///
     /// ## Arguments
     ///
     /// * `term_ix` The index of the term
-    fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a>;
+    fn block_iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + 'a>;
 
     /// Returns all the iterators for a term (if split list)
-    fn iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
+    fn block_iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
         let mut v = Vec::new();
-        v.push(SparseIndex::iterator(self, term_ix));
+        v.push(self.block_iterator(term_ix));
         v
-    }
-
-    /// Returns the number of terms in the index
-    fn length(&self) -> usize;
-}
-
-pub struct SparseIndexAsView<'a>(pub &'a Box<dyn SparseIndex + 'a>);
-impl<'a> SparseIndexView for SparseIndexAsView<'a> {
-    fn iterator<'b>(&'b self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'b> {
-        Box::new(SparseIndexViewIterator(SparseIndex::iterator(
-            self.0.as_ref(),
-            term_ix,
-        )))
-    }
-
-    fn length(&self) -> usize {
-        self.0.length()
     }
 }
 
@@ -172,18 +156,18 @@ impl<'a> Iterator for SparseIndexViewIterator<'a> {
     }
 }
 
+impl<T: SparseIndex> AsSparseIndexView for T {
+    fn as_view(&self) -> &dyn SparseIndexView {
+        self
+    }
+}
+
 impl<T> SparseIndexView for T
 where
     T: SparseIndex,
 {
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'a> {
-        Box::new(SparseIndexViewIterator(SparseIndex::iterator(
-            self, term_ix,
-        )))
-    }
-
-    fn length(&self) -> usize {
-        SparseIndex::length(self)
+        Box::new(SparseIndexViewIterator(self.block_iterator(term_ix)))
     }
 }
 

@@ -77,7 +77,7 @@ pub fn search_maxscore<'a>(
     let mut theta: f64;
 
     for (&ix, &weight) in query.iter() {
-        for iterator in index.iterators(ix) {
+        for iterator in index.block_iterators(ix) {
             let max_value = ((&iterator).max_value() * weight) as f64;
 
             let mut wrapper = MaxScoreTermIterator {

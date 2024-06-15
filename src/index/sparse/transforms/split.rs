@@ -2,7 +2,7 @@
 
 use std::sync::Mutex;
 
-use crate::base::{ImpactValue, TermIndex};
+use crate::base::{ImpactValue, Len, TermIndex};
 use crate::index::sparse::index::SparseIndexView;
 use crate::index::sparse::TermImpactIterator;
 use crate::index::sparse::{
@@ -13,7 +13,7 @@ use crate::index::sparse::{
 
 use serde::{Deserialize, Serialize};
 
-struct SplitIndexTransform {
+pub(crate) struct SplitIndexTransform {
     sink: Box<dyn IndexTransform>,
     quantiles: Vec<f64>,
 }
@@ -42,20 +42,25 @@ struct SplitIndex {
 }
 
 impl SparseIndex for SplitIndex {
-    fn iterator(&self, term_ix: crate::base::TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
+    fn block_iterator(
+        &self,
+        term_ix: crate::base::TermIndex,
+    ) -> Box<dyn BlockTermImpactIterator + '_> {
         todo!(); //Box::new(SplitPostingIterator::new(self, term_ix))
     }
 
-    fn iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
+    fn block_iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
         let mut v = Vec::new();
         for i in 1..self.splits {
-            v.push(self.inner.iterator(term_ix * self.splits + i - 1));
+            v.push(self.inner.block_iterator(term_ix * self.splits + i - 1));
         }
         v
     }
+}
 
-    fn length(&self) -> usize {
-        self.inner.length()
+impl Len for SplitIndex {
+    fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -74,7 +79,7 @@ struct SplitIndexView<'a> {
 impl<'a> SplitIndexView<'a> {
     pub fn new(source: &'a dyn SparseIndexView, quantiles: &'a Vec<f64>) -> Self {
         let mut thresholds = Vec::new();
-        for _ in 1..source.length() {
+        for _ in 1..source.len() {
             thresholds.push(Vec::new());
         }
 
@@ -138,8 +143,10 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
             max: thresholds[term_ix][quantile_ix + 1],
         })
     }
+}
 
-    fn length(&self) -> usize {
-        self.source.length() * (self.quantiles.len() + 1)
+impl<'a> Len for SplitIndexView<'a> {
+    fn len(&self) -> usize {
+        self.source.len() * (self.quantiles.len() + 1)
     }
 }

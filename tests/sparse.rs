@@ -151,7 +151,7 @@ fn test_index() {
             None => Box::new([].iter()),
         };
 
-        for (ix, observed) in index.iterator(term_ix).enumerate() {
+        for (ix, observed) in index.block_iterator(term_ix).enumerate() {
             let expected = iter.next().expect(&format!(
                 "The index has too many elements for term {}",
                 term_ix
@@ -327,8 +327,8 @@ fn test_compressed_index() {
     let c_index = load_index(dir.path(), true);
 
     check_same_index(
-        c_index.iterator(0).as_mut(),
-        index.iterator(0).as_mut(),
+        c_index.block_iterator(0).as_mut(),
+        index.block_iterator(0).as_mut(),
         step,
     );
 }

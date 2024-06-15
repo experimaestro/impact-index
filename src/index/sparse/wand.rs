@@ -50,7 +50,7 @@ impl<'a> WandSearch<'a> {
         let mut iterators = Vec::new();
 
         for (&ix, &weight) in query.iter() {
-            let iterator = index.iterator(ix);
+            let iterator = index.block_iterator(ix);
 
             let mut wrapper = BlockTermImpactIteratorWrapper {
                 iterator: iterator,

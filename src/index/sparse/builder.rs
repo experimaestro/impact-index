@@ -14,7 +14,10 @@ use super::{
     index::{IndexInformation, TermIndexPageInformation},
     TermImpact,
 };
-use crate::utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice};
+use crate::{
+    base::Len,
+    utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
+};
 use crate::{
     base::{BoxResult, DocId, ImpactValue, TermIndex},
     index::sparse::index::TermIndexInformation,
@@ -583,11 +586,13 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
 }
 
 impl SparseIndex for SparseBuilderIndex {
-    fn iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
+    fn block_iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
+}
 
-    fn length(&self) -> usize {
+impl Len for SparseBuilderIndex {
+    fn len(&self) -> usize {
         return self.terms.len();
     }
 }

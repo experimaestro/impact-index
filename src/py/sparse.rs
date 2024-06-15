@@ -10,9 +10,10 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::index::sparse::compress;
+use crate::index::sparse::transforms;
 
 use crate::base::{DocId, ImpactValue, TermIndex};
-use crate::index::sparse::index::{SparseIndex, SparseIndexAsView, SparseIndexView};
+use crate::index::sparse::index::{SparseIndex, SparseIndexView};
 use crate::index::sparse::load_index;
 use crate::index::sparse::maxscore::search_maxscore;
 use crate::index::sparse::transforms::IndexTransform;
@@ -132,7 +133,7 @@ impl PySparseIndex {
         Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
             // TODO: ugly but works since index is up here
-            iter: unsafe { extend_lifetime(self.index.iterator(term)) },
+            iter: unsafe { extend_lifetime(self.index.block_iterator(term)) },
         })
     }
 
@@ -299,13 +300,34 @@ impl CompressionTransform {
                 impacts_compressor: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
                 doc_ids_compressor: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
             };
-
-            let view = SparseIndexAsView(&*(index.index));
-            transform.process(Path::new(path), &view)
+            let view = index.index.as_view();
+            transform.process(Path::new(path), view)
         })?;
         Ok(())
     }
 }
+
+// #[pyclass]
+// struct SplitIndexTransform {
+//     value: Arc<transforms::split::SplitIndexTransform>,
+//     quantiles:
+// }
+
+// #[pymethods]
+// impl SplitIndexTransform {
+//     fn process(&self, path: &str, index: &PySparseIndex) -> PyResult<()> {
+//         Python::with_gil(|py| {
+//             let transform = transforms::split::SplitIndexTransform {
+//                 sink: ...,
+//                 quantiles: ...
+//             };
+
+//             let view = SparseIndexAsView(&*(index.index));
+//             transform.process(Path::new(path), &view)
+//         })?;
+//         Ok(())
+//     }
+// }
 
 pub fn init(module: &PyModule) -> PyResult<()> {
     module.add_class::<PySparseIndexer>()?;
@@ -314,6 +336,7 @@ pub fn init(module: &PyModule) -> PyResult<()> {
     module.add_class::<EliasFanoCompressor>()?;
     module.add_class::<ImpactQuantizer>()?;
     module.add_class::<CompressionTransform>()?;
+    // module.add_class::<SplitIndexTransform>()?;
 
     Ok(())
 }
