@@ -3,6 +3,7 @@ use pyo3::{
     pyclass, pymethods, pymodule, types::PyDict, types::PyModule, IntoPy, Py, PyAny, PyObject,
     PyRef, PyResult, Python,
 };
+use pyo3::{PyClassInitializer, ToPyObject};
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -12,6 +13,9 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 use crate::compress;
+use crate::compress::docid::EliasFanoCompressor;
+use crate::compress::CompressionTransform;
+use crate::transforms::split::SplitIndexTransform;
 
 use crate::base::load_index;
 use crate::base::{DocId, ImpactValue, TermIndex};
@@ -68,7 +72,10 @@ impl SparseSparseBuilderIndexIterator {
     }
 }
 
-#[pyclass(name = "SparseIndex")]
+#[pyclass(subclass, name = "IndexView")]
+pub struct PyIndexView {}
+
+#[pyclass(name = "Index", extends=PyIndexView)]
 pub struct PySparseIndex {
     index: Arc<Box<dyn SparseIndex>>,
 }
@@ -135,6 +142,7 @@ impl PySparseIndex {
         Ok(SparseSparseBuilderIndexIterator {
             index: self.index.clone(),
             // TODO: ugly but works since index is up here
+            // Could use ouroboros::self_referencing
             iter: unsafe { extend_lifetime(self.index.block_iterator(term)) },
         })
     }
@@ -171,15 +179,18 @@ impl PySparseIndex {
     }
 
     #[staticmethod]
-    fn load(folder: &str, in_memory: bool) -> PyResult<Self> {
-        Ok(PySparseIndex {
+    fn load(py: Python<'_>, folder: &str, in_memory: bool) -> PyResult<PyObject> {
+        let base = PyClassInitializer::from(PyIndexView {});
+        let sub = base.add_subclass(PySparseIndex {
             index: Arc::new(load_index(Path::new(folder), in_memory)),
-        })
+        });
+
+        Ok(Py::new(py, sub)?.to_object(py))
     }
 }
 
-#[pyclass(name = "SparseIndexer")]
-pub struct PySparseIndexer {
+#[pyclass(name = "IndexBuilder")]
+pub struct PyIndexBuilder {
     indexer: Arc<Mutex<SparseIndexer>>,
 }
 
@@ -189,10 +200,10 @@ unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'
 
 #[pymethods]
 /// Each document is a sparse vector
-impl PySparseIndexer {
+impl PyIndexBuilder {
     #[new]
     fn new(folder: &str) -> Self {
-        PySparseIndexer {
+        PyIndexBuilder {
             indexer: Arc::new(Mutex::new(SparseIndexer::new(Path::new(folder)))),
         }
     }
@@ -211,97 +222,80 @@ impl PySparseIndexer {
         Ok(())
     }
 
-    fn build(&mut self, in_memory: bool) -> PyResult<PySparseIndex> {
+    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
         let mut indexer = self.indexer.blocking_lock();
         indexer.build().expect("Error while building index");
+
+        let base = PyClassInitializer::from(PyIndexView {});
         let index = indexer.to_index(in_memory);
-        Ok(PySparseIndex {
+        let sub = base.add_subclass(PySparseIndex {
             index: Arc::new(Box::new(index)),
-        })
+        });
+
+        Ok(Py::new(py, sub)?.to_object(py))
     }
 }
 
 #[pyclass(subclass)]
-pub struct DocIdCompressor {
+pub struct PyDocIdCompressor {
     inner: Arc<Box<dyn compress::DocIdCompressor>>,
 }
 
-impl DocIdCompressor {}
+impl PyDocIdCompressor {}
 
-#[pyclass(extends=DocIdCompressor)]
-pub struct EliasFanoCompressor {}
+#[pyclass(name="EliasFanoCompressor", extends=PyDocIdCompressor)]
+pub struct PyEliasFanoCompressor {}
 
 #[pymethods]
-impl EliasFanoCompressor {
+impl PyEliasFanoCompressor {
     #[new]
-    fn new() -> (Self, DocIdCompressor) {
+    fn new() -> (Self, PyDocIdCompressor) {
         (
             Self {},
-            DocIdCompressor {
-                inner: Arc::new(Box::new(compress::docid::EliasFanoCompressor {})),
+            PyDocIdCompressor {
+                inner: Arc::new(Box::new(EliasFanoCompressor {})),
             },
         )
     }
 }
 
-#[pyclass(subclass)]
-pub struct ImpactCompressor {
+#[pyclass(name = "ImpactCompressor", subclass)]
+pub struct PyImpactCompressor {
     inner: Arc<Box<dyn compress::ImpactCompressor>>,
 }
 
-impl ImpactCompressor {}
+impl PyImpactCompressor {}
 
-#[pyclass(extends=ImpactCompressor)]
-pub struct ImpactQuantizer {}
+#[pyclass(name="ImpactQuantizer", extends=PyImpactCompressor)]
+pub struct PyImpactQuantizer {}
 
 #[pymethods]
-impl ImpactQuantizer {
+impl PyImpactQuantizer {
     #[new]
-    fn new(nbits: u32, min: ImpactValue, max: ImpactValue) -> (Self, ImpactCompressor) {
+    fn new(nbits: u32, min: ImpactValue, max: ImpactValue) -> (Self, PyImpactCompressor) {
         (
-            ImpactQuantizer {},
-            ImpactCompressor {
+            PyImpactQuantizer {},
+            PyImpactCompressor {
                 inner: Arc::new(Box::new(compress::impact::Quantizer::new(nbits, min, max))),
             },
         )
     }
 }
 
-#[pyclass(subclass)]
-pub struct Transform {}
+trait PyTransformFactory: Send + Sync {
+    fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform>;
+}
 
-#[pyclass(extends=Transform)]
-pub struct CompressionTransform {
-    max_block_size: usize,
-    doc_ids_compressor: Py<DocIdCompressor>,
-    impacts_compressor: Py<ImpactCompressor>,
+#[pyclass(subclass)]
+pub struct PyTransform {
+    factory: Box<dyn PyTransformFactory>,
 }
 
 #[pymethods]
-impl CompressionTransform {
-    #[new]
-    fn new(
-        max_block_size: usize,
-        doc_ids_compressor: Py<DocIdCompressor>,
-        impacts_compressor: Py<ImpactCompressor>,
-    ) -> (Self, Transform) {
-        (
-            CompressionTransform {
-                max_block_size: max_block_size,
-                doc_ids_compressor: doc_ids_compressor,
-                impacts_compressor: impacts_compressor,
-            },
-            Transform {},
-        )
-    }
-
+impl PyTransform {
     fn process(&self, path: &str, index: &PySparseIndex) -> PyResult<()> {
         Python::with_gil(|py| {
-            let transform = compress::CompressionTransform {
-                max_block_size: self.max_block_size,
-                impacts_compressor: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
-                doc_ids_compressor: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
-            };
+            let transform = self.factory.create(py);
             let view = index.index.as_view();
             transform.process(Path::new(path), view)
         })?;
@@ -309,27 +303,68 @@ impl CompressionTransform {
     }
 }
 
-// #[pyclass]
-// struct SplitIndexTransform {
-//     value: Arc<transforms::split::SplitIndexTransform>,
-//     quantiles:
-// }
+struct PyCompressionTransformFactory {
+    max_block_size: usize,
+    doc_ids_compressor: Py<PyDocIdCompressor>,
+    impacts_compressor: Py<PyImpactCompressor>,
+}
 
-// #[pymethods]
-// impl SplitIndexTransform {
-//     fn process(&self, path: &str, index: &PySparseIndex) -> PyResult<()> {
-//         Python::with_gil(|py| {
-//             let transform = transforms::split::SplitIndexTransform {
-//                 sink: ...,
-//                 quantiles: ...
-//             };
+impl PyTransformFactory for PyCompressionTransformFactory {
+    fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform> {
+        Box::new(CompressionTransform {
+            max_block_size: self.max_block_size,
+            impacts_compressor: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
+            doc_ids_compressor: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
+        })
+    }
+}
 
-//             let view = SparseIndexAsView(&*(index.index));
-//             transform.process(Path::new(path), &view)
-//         })?;
-//         Ok(())
-//     }
-// }
+#[pyclass(extends=PyTransform, name="CompressionTransform")]
+pub struct PyCompressionTransform {}
+
+#[pymethods]
+impl PyCompressionTransform {
+    #[new]
+    fn new(
+        max_block_size: usize,
+        doc_ids_compressor: Py<PyDocIdCompressor>,
+        impacts_compressor: Py<PyImpactCompressor>,
+    ) -> (Self, PyTransform) {
+        let factory = Box::new(PyCompressionTransformFactory {
+            max_block_size: max_block_size,
+            doc_ids_compressor: doc_ids_compressor,
+            impacts_compressor: impacts_compressor,
+        });
+        (PyCompressionTransform {}, PyTransform { factory })
+    }
+}
+
+struct PySplitIndexTransformFactory {
+    sink: Py<PyTransform>,
+    quantiles: Vec<f64>,
+}
+impl PyTransformFactory for PySplitIndexTransformFactory {
+    fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform> {
+        let sink = self.sink.borrow(py).factory.create(py);
+
+        Box::new(SplitIndexTransform {
+            sink,
+            quantiles: self.quantiles.clone(),
+        })
+    }
+}
+
+#[pyclass(name="SplitIndexTransform", extends=PyTransform)]
+struct PySplitIndexTransform {}
+
+#[pymethods]
+impl PySplitIndexTransform {
+    #[new]
+    fn new(quantiles: Vec<f64>, sink: Py<PyTransform>) -> (Self, PyTransform) {
+        let factory = Box::new(PySplitIndexTransformFactory { sink, quantiles });
+        (PySplitIndexTransform {}, PyTransform { factory })
+    }
+}
 
 /// A Python module implemented in Rust.
 #[pymodule]
@@ -338,13 +373,13 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     pyo3_log::init();
     debug!("Loading xpmir-rust extension");
 
-    module.add_class::<PySparseIndexer>()?;
+    module.add_class::<PyIndexBuilder>()?;
     module.add_class::<PySparseIndex>()?;
 
-    module.add_class::<EliasFanoCompressor>()?;
-    module.add_class::<ImpactQuantizer>()?;
-    module.add_class::<CompressionTransform>()?;
-    // module.add_class::<SplitIndexTransform>()?;
+    module.add_class::<PyEliasFanoCompressor>()?;
+    module.add_class::<PyImpactQuantizer>()?;
+    module.add_class::<PyCompressionTransform>()?;
+    module.add_class::<PySplitIndexTransform>()?;
 
     Ok(())
 }

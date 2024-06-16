@@ -12,8 +12,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 
 pub(crate) struct SplitIndexTransform {
-    sink: Box<dyn IndexTransform>,
-    quantiles: Vec<f64>,
+    pub sink: Box<dyn IndexTransform>,
+    pub quantiles: Vec<f64>,
 }
 
 impl IndexTransform for SplitIndexTransform {
@@ -101,7 +101,10 @@ impl<'a> Iterator for SplitIndexViewIterator<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         while let Some(posting) = self.iterator.next() {
             if (posting.value >= self.min) && (posting.value < self.max) {
-                return Some(posting);
+                return Some(TermImpact {
+                    docid: posting.docid,
+                    value: posting.value - self.min,
+                });
             }
         }
         None
@@ -115,9 +118,10 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
         let quantile_ix = term_ix % (self.quantiles.len() + 1);
 
         let thresholds = &mut self.thresholds.lock().unwrap();
+        let term_thresholds = &mut thresholds[term_ix];
 
         // Computes the term threshold if not in cache
-        if thresholds[source_term_ix].len() == 0 {
+        if term_thresholds.len() == 0 {
             let mut values: Vec<ImpactValue> = self
                 .source
                 .iterator(term_ix)
@@ -125,10 +129,13 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
                 .collect();
             values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-            let term_thresholds = &mut thresholds[term_ix];
             term_thresholds.push(0.);
             for q in self.quantiles {
-                let threshold = values[(q * values.len() as f64).trunc() as usize];
+                let ix = (q * values.len() as f64).trunc() as usize;
+                let mut threshold = 0.;
+                if ix < values.len() {
+                    threshold = values[ix];
+                }
                 term_thresholds.push(threshold);
             }
             term_thresholds.push(ImpactValue::INFINITY);
@@ -136,9 +143,9 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
 
         // Returns the iterator
         Box::new(SplitIndexViewIterator {
-            iterator: self.source.iterator(term_ix),
-            min: thresholds[term_ix][quantile_ix],
-            max: thresholds[term_ix][quantile_ix + 1],
+            iterator: self.source.iterator(source_term_ix),
+            min: term_thresholds[quantile_ix],
+            max: term_thresholds[quantile_ix + 1],
         })
     }
 }
