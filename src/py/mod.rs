@@ -20,7 +20,7 @@ use crate::transforms::split::SplitIndexTransform;
 use crate::base::load_index;
 use crate::base::{DocId, ImpactValue, TermIndex};
 use crate::index::SparseIndex;
-use crate::search::maxscore::search_maxscore;
+use crate::search::maxscore::{search_maxscore, MaxScoreOptions};
 use crate::transforms::IndexTransform;
 use crate::{
     base::SearchFn, base::TermImpactIterator, builder::Indexer as SparseIndexer,
@@ -157,7 +157,10 @@ impl PySparseIndex {
     }
 
     fn search_maxscore(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, search_maxscore)
+        self._search(py_query, top_k, |index, query, top_k| {
+            let options = MaxScoreOptions::default();
+            search_maxscore(index, query, top_k, options)
+        })
     }
 
     fn aio_search_wand<'a>(
@@ -175,7 +178,10 @@ impl PySparseIndex {
         py_query: &PyDict,
         top_k: usize,
     ) -> PyResult<&'a PyAny> {
-        self._aio_search(py, py_query, top_k, search_maxscore)
+        self._aio_search(py, py_query, top_k, |index, query, top_k| {
+            let options = MaxScoreOptions::default();
+            search_maxscore(index, query, top_k, options)
+        })
     }
 
     #[staticmethod]

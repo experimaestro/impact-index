@@ -3,7 +3,7 @@
 use std::{
     cell::RefCell,
     fmt,
-    fs::File,
+    fs::{create_dir, File},
     io::{Seek, Write},
     path::Path,
 };
@@ -16,7 +16,7 @@ use crate::{
     base::{save_index, DocId, ImpactValue, IndexLoader, Len, TermImpact, TermIndex},
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
-use log::debug;
+use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 pub mod docid;
@@ -446,6 +446,12 @@ impl IndexTransform for CompressionTransform {
     ///
     /// - max_block_size: maximum number of records per block
     fn process(&self, path: &Path, index: &dyn SparseIndexView) -> Result<(), std::io::Error> {
+        // Create the directory if needed
+        if !path.is_dir() {
+            info!("Creating path {}", path.display());
+            create_dir(path)?;
+        }
+
         // File for impact values
         let mut impact_writer = File::options()
             .write(true)

@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use derivative::Derivative;
 use log::debug;
 
 use crate::{
@@ -59,6 +60,13 @@ impl MaxScoreTermIterator<'_> {
     }
 }
 
+#[derive(Derivative)]
+#[derivative(Default)]
+pub struct MaxScoreOptions {
+    #[derivative(Default(value = "true"))]
+    length_based_ordering: bool,
+}
+
 /*
  * Search using the MaxScore algorithm
  * (algorithm 1 in Accelerating Learned Sparse Indexes Via Term Impact Decomposition, Mackenzie et al., 2022)
@@ -67,6 +75,7 @@ pub fn search_maxscore<'a>(
     index: &'a dyn SparseIndex,
     query: &HashMap<TermIndex, ImpactValue>,
     top_k: usize,
+    options: MaxScoreOptions,
 ) -> Vec<ScoredDocument> {
     // --- Initialize the structures
 
@@ -95,9 +104,14 @@ pub fn search_maxscore<'a>(
         }
     }
 
-    // Sort iterators
-    active.sort_by(|a, b| b.iterator.max_value().total_cmp(&a.iterator.max_value()));
-    assert!(active[0].iterator.max_value() >= active.last().expect("").iterator.max_value());
+    if options.length_based_ordering {
+        // Sort by posting list length (increasing, so that the longest will be passive first)
+        // Note: this is what Mackenzie does
+        active.sort_by(|a, b| a.iterator.length().cmp(&b.iterator.length()));
+    } else {
+        // other option: sort by max values (decreasing)
+        active.sort_by(|a, b| b.max_value.total_cmp(&a.max_value));
+    }
 
     let mut passive = Vec::<MaxScoreTermIterator>::new();
     let mut sum_pass = 0.;

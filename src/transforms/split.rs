@@ -1,8 +1,10 @@
 //! Splits an index for a term
 
+use std::fs::create_dir;
+use std::path::Path;
 use std::sync::Mutex;
 
-use crate::base::{ImpactValue, Len, TermImpact, TermIndex};
+use crate::base::{load_index, save_index, ImpactValue, IndexLoader, Len, TermImpact, TermIndex};
 use crate::index::SparseIndexView;
 use crate::{
     index::{BlockTermImpactIterator, SparseIndex},
@@ -22,12 +24,19 @@ impl IndexTransform for SplitIndexTransform {
         path: &std::path::Path,
         index: &dyn SparseIndexView,
     ) -> Result<(), std::io::Error> {
+        if !path.is_dir() {
+            create_dir(path)?;
+        }
         let inner_path = path.join("inner");
 
         let split_view = SplitIndexView::new(index, &self.quantiles);
         self.sink.process(inner_path.as_path(), &split_view)?;
 
-        Ok(())
+        let index = SplitIndexLoader {
+            splits: self.quantiles.len() + 1,
+        };
+
+        save_index(Box::new(index), path)
     }
 }
 
@@ -39,6 +48,48 @@ struct SplitIndex {
     splits: usize,
 }
 
+#[derive(Serialize, Deserialize)]
+struct SplitIndexLoader {
+    splits: usize,
+}
+
+#[typetag::serde]
+impl IndexLoader for SplitIndexLoader {
+    fn into_index(self: Box<Self>, path: &Path, in_memory: bool) -> Box<dyn SparseIndex> {
+        let inner = load_index(&path.join("inner"), in_memory);
+        Box::new(SplitIndex {
+            inner,
+            splits: self.splits,
+        })
+    }
+}
+
+struct SplitIndexTermIterator<'a> {
+    iterators: Vec<Box<dyn BlockTermImpactIterator + 'a>>,
+}
+
+impl<'a> BlockTermImpactIterator for SplitIndexTermIterator<'a> {
+    fn next_min_doc_id(&mut self, doc_id: crate::base::DocId) -> bool {
+        todo!()
+    }
+
+    fn current(&self) -> TermImpact {
+        todo!()
+    }
+
+    fn max_value(&self) -> ImpactValue {
+        todo!()
+    }
+
+    fn max_doc_id(&self) -> crate::base::DocId {
+        todo!()
+    }
+
+    fn length(&self) -> usize {
+        todo!()
+    }
+}
+
 impl SparseIndex for SplitIndex {
     fn block_iterator(
         &self,
@@ -48,9 +99,16 @@ impl SparseIndex for SplitIndex {
     }
 
     fn block_iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
-        let mut v = Vec::new();
+        let mut v: Vec<Box<dyn BlockTermImpactIterator>> = Vec::new();
+
         for i in 1..self.splits {
-            v.push(self.inner.block_iterator(term_ix * self.splits + i - 1));
+            let mut iterators = Vec::new();
+            for j in 1..i {
+                iterators.push(self.inner.block_iterator(term_ix * self.splits + j - 1));
+            }
+            v.push(Box::new(SplitIndexTermIterator {
+                iterators: iterators,
+            }));
         }
         v
     }
@@ -103,7 +161,7 @@ impl<'a> Iterator for SplitIndexViewIterator<'a> {
             if (posting.value >= self.min) && (posting.value < self.max) {
                 return Some(TermImpact {
                     docid: posting.docid,
-                    value: posting.value - self.min,
+                    value: posting.value,
                 });
             }
         }
@@ -118,7 +176,7 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
         let quantile_ix = term_ix % (self.quantiles.len() + 1);
 
         let thresholds = &mut self.thresholds.lock().unwrap();
-        let term_thresholds = &mut thresholds[term_ix];
+        let term_thresholds = &mut thresholds[source_term_ix];
 
         // Computes the term threshold if not in cache
         if term_thresholds.len() == 0 {
