@@ -3,7 +3,7 @@ use impact_index::{
     builder::Indexer,
     compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
     index::{BlockTermImpactIterator, SparseIndex},
-    search::{ScoredDocument, TopScoredDocuments},
+    search::{maxscore::MaxScoreOptions, ScoredDocument, TopScoredDocuments},
     transforms::IndexTransform,
 };
 use log::{debug, info};
@@ -214,6 +214,14 @@ fn test_heap() {
     vec_compare(&observed, &expected);
 }
 
+fn search_maxscore_default<'a>(
+    index: &'a dyn SparseIndex,
+    query: &HashMap<TermIndex, ImpactValue>,
+    top_k: usize,
+) -> Vec<ScoredDocument> {
+    search_maxscore(index, query, top_k, MaxScoreOptions::default())
+}
+
 #[rstest]
 #[case(true, 100, 1000, 50., 50, 10, None)]
 #[case(true, 100, 1000, 50., 50, 1, None)]
@@ -227,7 +235,7 @@ fn test_search(
     #[case] max_words: usize,
     #[case] top_k: usize,
     #[case] seed: Option<u64>,
-    #[values(search_wand, search_maxscore)] search_fn: SearchFn,
+    #[values(search_wand, search_maxscore_default)] search_fn: SearchFn,
 ) {
     use impact_index::builder::load_forward_index;
 
