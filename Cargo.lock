@@ -457,7 +457,9 @@ checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
 name = "helpers"
 version = "0.0.1"
 dependencies = [
+ "impact-index",
  "ndarray",
+ "ntest",
  "rand",
  "rand_distr",
  "temp-dir",
@@ -725,6 +727,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "rawpointer",
+ "serde",
 ]
 
 [[package]]

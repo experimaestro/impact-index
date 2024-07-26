@@ -1,23 +1,15 @@
 use impact_index::{
-    base::{load_index, ImpactValue, TermImpact, TermIndex},
-    builder::Indexer,
-    compress::{docid::EliasFanoCompressor, impact::Quantizer, CompressionTransform},
-    index::{BlockTermImpactIterator, SparseIndex},
+    base::{ImpactValue, TermIndex},
+    index::SparseIndex,
     search::{maxscore::MaxScoreOptions, ScoredDocument, TopScoredDocuments},
-    transforms::IndexTransform,
 };
 use log::{debug, info};
-use ntest::assert_about_eq;
 use rstest::rstest;
 
-use helpers::documents::{create_document, document_vectors, TestDocument};
-
+use helpers::index::TestIndex;
 use impact_index::base::SearchFn;
 use impact_index::search::{maxscore::search_maxscore, wand::search_wand};
-use rand::{rngs::StdRng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
-use temp_dir::TempDir;
-
 use std::{collections::HashMap, fmt::Display};
 
 /// Initialize the logger
@@ -53,84 +45,6 @@ where
             observed[i],
             expected[i]
         );
-    }
-}
-
-struct TestIndex {
-    dir: TempDir,
-    vocabulary_size: usize,
-    all_terms: HashMap<TermIndex, Vec<TermImpact>>,
-    indexer: Indexer,
-    documents: Vec<TestDocument>,
-}
-
-impl TestIndex {
-    fn new(
-        vocabulary_size: usize,
-        document_count: i64,
-        lambda_words: f32,
-        max_words: usize,
-        seed: Option<u64>,
-        in_memory_threshold: Option<usize>,
-    ) -> Self {
-        let dir = TempDir::new().expect("Could not create temporary directory");
-        let mut indexer = Indexer::new(&dir.path());
-
-        if let Some(v) = in_memory_threshold {
-            indexer.set_in_memory_threshold(v);
-        }
-
-        let mut all_terms = HashMap::<TermIndex, Vec<TermImpact>>::new();
-        let mut documents = Vec::<TestDocument>::new();
-        // let mut rng = thread_rng();
-        let mut rng = if let Some(seed) = seed {
-            StdRng::seed_from_u64(seed)
-        } else {
-            StdRng::from_entropy()
-        };
-
-        // Creates documents
-        for ix in 0..document_count {
-            let doc_id = ix.try_into().unwrap();
-            let document = create_document(lambda_words, max_words, vocabulary_size, &mut rng);
-
-            let (terms, values) = document_vectors(&document);
-
-            // Add those to the index
-            indexer
-                .add(doc_id, &terms, &values)
-                .expect("Error while adding terms to the index");
-
-            for term in document.terms.iter() {
-                let m = all_terms.get_mut(&term.term_ix);
-                let ti = TermImpact {
-                    docid: doc_id,
-                    value: term.weight,
-                };
-                match m {
-                    Some(p) => {
-                        p.push(ti);
-                    }
-                    None => {
-                        let p = vec![ti];
-                        all_terms.insert(term.term_ix, p);
-                        // eprintln!("Adding {} ({}) in document {}", term.term_ix, ti, ix);
-                    }
-                }
-            }
-
-            documents.push(document);
-        }
-
-        // Build the index
-        indexer.build().expect("Error while building the index");
-        Self {
-            dir: dir,
-            vocabulary_size: vocabulary_size,
-            all_terms: all_terms,
-            documents: documents,
-            indexer: indexer,
-        }
     }
 }
 
@@ -298,43 +212,4 @@ fn test_search(
     }
 
     vec_compare(&observed, &expected);
-}
-
-fn check_same_index(
-    index_a: &mut dyn BlockTermImpactIterator,
-    index_b: &mut dyn BlockTermImpactIterator,
-    impact_eps: f64,
-) {
-    while let Some(a) = index_a.next() {
-        let b = index_b.next().expect("Index b contains less entries");
-        assert!(a.docid == b.docid);
-        assert_about_eq!(a.value, b.value, impact_eps);
-    }
-}
-
-#[test]
-fn test_compressed_index() {
-    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
-    let index = data.indexer.to_index(true);
-
-    let dir = TempDir::new().expect("Could not create temporary directory");
-    let step = 5. / ((2 << 4) as f64);
-
-    let transform = CompressionTransform {
-        max_block_size: 1024,
-        doc_ids_compressor: Box::new(EliasFanoCompressor {}),
-        impacts_compressor: Box::new(Quantizer::new(4, 0., 5.)),
-    };
-
-    transform
-        .process(dir.path(), &index)
-        .expect("An error occurred");
-
-    let c_index = load_index(dir.path(), true);
-
-    check_same_index(
-        c_index.block_iterator(0).as_mut(),
-        index.block_iterator(0).as_mut(),
-        step,
-    );
 }

@@ -13,7 +13,7 @@ use crate::{
 
 use serde::{Deserialize, Serialize};
 
-pub(crate) struct SplitIndexTransform {
+pub struct SplitIndexTransform {
     pub sink: Box<dyn IndexTransform>,
     pub quantiles: Vec<f64>,
 }
@@ -64,29 +64,53 @@ impl IndexLoader for SplitIndexLoader {
     }
 }
 
+/// Merge the iterators
 struct SplitIndexTermIterator<'a> {
+    /// The iterators
     iterators: Vec<Box<dyn BlockTermImpactIterator + 'a>>,
+
+    /// Maximum impact value
+    max_value: ImpactValue,
 }
 
 impl<'a> BlockTermImpactIterator for SplitIndexTermIterator<'a> {
     fn next_min_doc_id(&mut self, doc_id: crate::base::DocId) -> bool {
-        todo!()
+        self.iterators
+            .iter_mut()
+            .fold(false, |p, it| it.next_min_doc_id(doc_id) | p)
     }
 
     fn current(&self) -> TermImpact {
-        todo!()
+        // pick the next one
+        let mut c = self.iterators[0].current();
+        for i in 1..self.iterators.len() {
+            let other = self.iterators[i].current();
+            if other.docid < c.docid {
+                c = other
+            }
+        }
+
+        if c.value > self.max_value {
+            c.value = self.max_value
+        }
+
+        c
     }
 
     fn max_value(&self) -> ImpactValue {
-        todo!()
+        self.iterators
+            .iter()
+            .fold(0., |p, it| p.max(it.max_value()))
     }
 
     fn max_doc_id(&self) -> crate::base::DocId {
-        todo!()
+        self.iterators
+            .iter()
+            .fold(0, |p, it| p.max(it.max_doc_id()))
     }
 
     fn length(&self) -> usize {
-        todo!()
+        self.iterators.iter().fold(0, |p, it| p + it.length())
     }
 }
 
@@ -95,19 +119,31 @@ impl SparseIndex for SplitIndex {
         &self,
         term_ix: crate::base::TermIndex,
     ) -> Box<dyn BlockTermImpactIterator + '_> {
-        todo!(); //Box::new(SplitPostingIterator::new(self, term_ix))
+        // Creates an iterator that merge all the posting lists
+        let mut iterators = Vec::new();
+        for j in 0..self.splits {
+            iterators.push(self.inner.block_iterator(term_ix * self.splits + j));
+        }
+        Box::new(SplitIndexTermIterator {
+            iterators: iterators,
+            max_value: ImpactValue::INFINITY,
+        })
     }
 
     fn block_iterators(&self, term_ix: TermIndex) -> Vec<Box<dyn BlockTermImpactIterator + '_>> {
         let mut v: Vec<Box<dyn BlockTermImpactIterator>> = Vec::new();
 
-        for i in 1..self.splits {
+        for i in 0..self.splits {
             let mut iterators = Vec::new();
-            for j in 1..i {
-                iterators.push(self.inner.block_iterator(term_ix * self.splits + j - 1));
+            for j in 0..(i + 1) {
+                iterators.push(self.inner.block_iterator(term_ix * self.splits + j));
             }
+
+            // The maximum impact is bounded by the first iterator
+            let max_value = iterators[0].max_value();
             v.push(Box::new(SplitIndexTermIterator {
-                iterators: iterators,
+                iterators,
+                max_value,
             }));
         }
         v
@@ -116,7 +152,7 @@ impl SparseIndex for SplitIndex {
 
 impl Len for SplitIndex {
     fn len(&self) -> usize {
-        self.inner.len()
+        self.inner.len() / self.splits
     }
 }
 
@@ -135,7 +171,7 @@ struct SplitIndexView<'a> {
 impl<'a> SplitIndexView<'a> {
     pub fn new(source: &'a dyn SparseIndexView, quantiles: &'a Vec<f64>) -> Self {
         let mut thresholds = Vec::new();
-        for _ in 1..source.len() {
+        for _ in 0..source.len() {
             thresholds.push(Vec::new());
         }
 
@@ -182,7 +218,7 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
         if term_thresholds.len() == 0 {
             let mut values: Vec<ImpactValue> = self
                 .source
-                .iterator(term_ix)
+                .iterator(source_term_ix)
                 .map(|posting| posting.value)
                 .collect();
             values.sort_by(|a, b| a.partial_cmp(b).unwrap());

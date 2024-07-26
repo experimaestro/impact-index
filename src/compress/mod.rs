@@ -434,8 +434,13 @@ impl Len for CompressedIndex {
 }
 
 pub struct CompressionTransform {
+    #[doc = r"maximum number of records per block"]
     pub max_block_size: usize,
+
+    #[doc = r"Document ID compressor"]
     pub doc_ids_compressor: Box<dyn DocIdCompressor>,
+
+    #[doc = r"maximum number of records per block"]
     pub impacts_compressor: Box<dyn ImpactCompressor>,
 }
 
@@ -444,7 +449,6 @@ impl IndexTransform for CompressionTransform {
     ///
     /// # Arguments
     ///
-    /// - max_block_size: maximum number of records per block
     fn process(&self, path: &Path, index: &dyn SparseIndexView) -> Result<(), std::io::Error> {
         // Create the directory if needed
         if !path.is_dir() {

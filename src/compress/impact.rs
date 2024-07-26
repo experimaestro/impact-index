@@ -3,6 +3,7 @@
 use std::io::Write;
 
 use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
+use byteorder::{ReadBytesExt, WriteBytesExt};
 
 use super::{Compressor, ImpactCompressor, TermBlockInformation};
 use crate::{
@@ -99,5 +100,60 @@ impl<'a> Compressor<ImpactValue> for Quantizer {
             min: self.min,
             step: self.step,
         })
+    }
+}
+
+// ----- Identity transform
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Identity {}
+
+#[typetag::serde]
+impl ImpactCompressor for Identity {
+    fn clone(&self) -> Box<dyn ImpactCompressor> {
+        Box::new(Clone::clone(self))
+    }
+}
+
+impl<'a> Compressor<ImpactValue> for Identity {
+    fn write(&self, writer: &mut dyn Write, values: &[ImpactValue], _info: &TermBlockInformation) {
+        for x in values {
+            writer
+                .write_f32::<byteorder::BigEndian>(*x)
+                .expect("cannot write");
+        }
+    }
+
+    fn read<'b>(
+        &self,
+        slice: Box<dyn Slice + 'b>,
+        info: &TermBlockInformation,
+    ) -> Box<dyn Iterator<Item = ImpactValue> + Send + 'b> {
+        Box::new(IdentityIterator::<'b> {
+            index: 0,
+            count: info.length,
+            slice,
+        })
+    }
+}
+
+struct IdentityIterator<'a> {
+    index: usize,
+    count: usize,
+    slice: Box<dyn Slice + 'a>,
+}
+
+impl<'a> Iterator for IdentityIterator<'a> {
+    type Item = ImpactValue;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index < self.count {
+            let data = self.slice.as_ref().data();
+            let mut view = &data[self.index * 4..self.index * 4 + 4];
+            self.index += 1;
+            Some(view.read_f32::<byteorder::BigEndian>().expect("read error"))
+        } else {
+            None
+        }
     }
 }

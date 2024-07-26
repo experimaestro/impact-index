@@ -3,8 +3,7 @@ use rand::{self, RngCore};
 use rand_distr::{Distribution, Normal, Poisson};
 use std::cmp::min;
 
-type TermIndex = usize;
-type ImpactValue = f32;
+use impact_index::base::{ImpactValue, TermIndex};
 
 pub struct TermWeight {
     pub term_ix: TermIndex,

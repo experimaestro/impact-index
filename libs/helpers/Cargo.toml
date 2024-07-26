@@ -11,3 +11,5 @@ temp-dir = "0.1.11"
 rand_distr = "0.4.3"
 rand = "0.8.5"
 ndarray = "0.15.4"
+ntest = {}
+impact-index = { path = "../.."}
