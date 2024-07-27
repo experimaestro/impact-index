@@ -35,9 +35,11 @@ fn test_split_index() {
 
     let c_index = load_index(dir.path(), true);
 
-    check_same_index(
-        c_index.block_iterator(0).as_mut(),
-        index.block_iterator(0).as_mut(),
-        0.,
-    );
+    for term_ix in [0, 5, 27, 99] {
+        check_same_index(
+            c_index.block_iterator(term_ix).as_mut(),
+            index.block_iterator(term_ix).as_mut(),
+            0.,
+        );
+    }
 }
