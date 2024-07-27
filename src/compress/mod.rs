@@ -277,12 +277,22 @@ impl<'a> Iterator for CompressedIndexIterator<'a> {
 }
 
 struct CompressedBlockTermImpactIterator<'a> {
+    /// Iterator for this term
     iterator: RefCell<CompressedIndexIterator<'a>>,
+
+    // Requested minimum document ID
     current_min_docid: Option<DocId>,
+
     // We need a RefCell for method current()
     current_value: RefCell<Option<TermImpact>>,
+
+    // Maximum value over all postings
     max_value: ImpactValue,
+
+    // Maximum document ID over all postings
     max_doc_id: DocId,
+
+    // Number of postings
     length: usize,
 }
 
@@ -301,7 +311,7 @@ impl<'a> CompressedBlockTermImpactIterator<'a> {
 }
 
 impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
-    fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
+    fn next_min_doc_id(&mut self, min_doc_id: DocId) -> Option<DocId> {
         // Sets the current minimum document ID
         self.current_min_docid = Some(min_doc_id.max(
             if let Some(impact) = self.current_value.get_mut() {
@@ -313,18 +323,17 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
         let min_doc_id = self.current_min_docid.expect("Should not be None");
 
         // Move to the block having at least one document greater that min_doc_id
-        let ok = self.iterator.get_mut().move_iterator(min_doc_id);
-
-        if !ok {
-            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix)
-        } else {
+        if self.iterator.get_mut().move_iterator(min_doc_id) {
             debug!(
                 "[{}] We have a candidate for doc_id >= {}",
                 self.iterator.get_mut().term_ix,
                 min_doc_id
-            )
+            );
+            Some(self.min_block_doc_id())
+        } else {
+            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix);
+            None
         }
-        ok
     }
 
     /// Returns the current document ID

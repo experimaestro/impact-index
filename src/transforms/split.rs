@@ -1,10 +1,15 @@
 //! Splits an index for a term
 
+use std::cell::RefCell;
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fs::create_dir;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::base::{load_index, save_index, ImpactValue, IndexLoader, Len, TermImpact, TermIndex};
+use crate::base::{
+    load_index, save_index, DocId, ImpactValue, IndexLoader, Len, TermImpact, TermIndex,
+};
 use crate::index::SparseIndexView;
 use crate::{
     index::{BlockTermImpactIterator, SparseIndex},
@@ -64,6 +69,36 @@ impl IndexLoader for SplitIndexLoader {
     }
 }
 
+struct SplitIndexTermIteratorHeapValue {
+    /// Index of the iterator
+    index: usize,
+
+    /// Term impact if loaded
+    term_impact: Option<TermImpact>,
+
+    /// Minimum document ID (>= term_impact doc ID)
+    min_doc_id: DocId,
+}
+
+impl Eq for SplitIndexTermIteratorHeapValue {}
+
+impl PartialEq for SplitIndexTermIteratorHeapValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.min_doc_id == other.min_doc_id
+    }
+}
+
+impl PartialOrd for SplitIndexTermIteratorHeapValue {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        other.min_doc_id.partial_cmp(&self.min_doc_id)
+    }
+}
+impl Ord for SplitIndexTermIteratorHeapValue {
+    fn cmp(&self, other: &Self) -> Ordering {
+        other.min_doc_id.partial_cmp(&self.min_doc_id).expect("")
+    }
+}
+
 /// Merge the iterators
 struct SplitIndexTermIterator<'a> {
     /// The iterators
@@ -71,30 +106,73 @@ struct SplitIndexTermIterator<'a> {
 
     /// Maximum impact value
     max_value: ImpactValue,
+
+    /// Current posting
+    current: RefCell<BinaryHeap<SplitIndexTermIteratorHeapValue>>,
+
+    /// Current requested minimum doc ID
+    min_doc_id: DocId,
 }
 
-impl<'a> BlockTermImpactIterator for SplitIndexTermIterator<'a> {
-    fn next_min_doc_id(&mut self, doc_id: crate::base::DocId) -> bool {
-        self.iterators
-            .iter_mut()
-            .fold(false, |p, it| it.next_min_doc_id(doc_id) | p)
-    }
+impl<'a> SplitIndexTermIterator<'a> {}
 
-    fn current(&self) -> TermImpact {
-        // pick the next one
-        let mut c = self.iterators[0].current();
-        for i in 1..self.iterators.len() {
-            let other = self.iterators[i].current();
-            if other.docid < c.docid {
-                c = other
+impl<'a> BlockTermImpactIterator for SplitIndexTermIterator<'a> {
+    fn next_min_doc_id(&mut self, doc_id: DocId) -> Option<DocId> {
+        let mut current = self.current.borrow_mut();
+
+        // No next document
+        if (current.len() == 0) && (self.iterators.len() == 0) {
+            return None;
+        }
+
+        if current.len() == 0 {
+            // First run, we initialize all the iterators
+            for (ix, it) in self.iterators.iter_mut().enumerate() {
+                if let Some(block_min_doc_id) = it.next_min_doc_id(doc_id) {
+                    current.push(SplitIndexTermIteratorHeapValue {
+                        index: ix,
+                        term_impact: None,
+                        min_doc_id: block_min_doc_id,
+                    })
+                }
+            }
+            assert!(self.min_doc_id == 0);
+            self.min_doc_id = doc_id;
+            return Some(doc_id);
+        } else {
+            // Try to get at least one iterator
+            self.min_doc_id = doc_id.max(self.min_doc_id + 1);
+            while !current.is_empty() {
+                let mut value = current.pop().expect("");
+                if let Some(block_min_doc_id) =
+                    self.iterators[value.index].next_min_doc_id(self.min_doc_id)
+                {
+                    value.min_doc_id = block_min_doc_id;
+                    value.term_impact = None;
+                    current.push(value);
+                    break;
+                }
             }
         }
 
-        if c.value > self.max_value {
-            c.value = self.max_value
-        }
+        None
+    }
 
-        c
+    fn current(&self) -> TermImpact {
+        let mut current = self.current.borrow_mut();
+        loop {
+            // If the top of the heap is valid, return it
+            if let Some(term_impact) = current.peek().expect("No current element").term_impact {
+                return term_impact;
+            }
+
+            // Otherwise, let's retrieve the element
+            let mut element = current.pop().expect("No current element");
+            let term_impact = self.iterators[element.index].current();
+            element.min_doc_id = term_impact.docid;
+            element.term_impact = Some(self.iterators[element.index].current());
+            current.push(element);
+        }
     }
 
     fn max_value(&self) -> ImpactValue {
@@ -126,7 +204,9 @@ impl SparseIndex for SplitIndex {
         }
         Box::new(SplitIndexTermIterator {
             iterators: iterators,
+            current: RefCell::new(BinaryHeap::new()),
             max_value: ImpactValue::INFINITY,
+            min_doc_id: 0,
         })
     }
 
@@ -142,8 +222,10 @@ impl SparseIndex for SplitIndex {
             // The maximum impact is bounded by the first iterator
             let max_value = iterators[0].max_value();
             v.push(Box::new(SplitIndexTermIterator {
+                current: RefCell::new(BinaryHeap::new()),
                 iterators,
                 max_value,
+                min_doc_id: 0,
             }));
         }
         v

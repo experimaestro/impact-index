@@ -46,7 +46,8 @@ impl MaxScoreTermIterator<'_> {
             return Some(&self.impact);
         }
 
-        if !self.iterator.next_min_doc_id(doc_id) {
+        let min_doc_id = self.iterator.next_min_doc_id(doc_id);
+        if min_doc_id.is_none() {
             return None;
         }
         let mut impact = self.iterator.current();

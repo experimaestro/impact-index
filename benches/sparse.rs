@@ -6,7 +6,10 @@ use helpers::documents::{create_document, document_vectors};
 use impact_index::{
     base::SearchFn,
     builder::Indexer,
-    search::{maxscore::search_maxscore, wand::search_wand},
+    search::{
+        maxscore::{search_maxscore, MaxScoreOptions},
+        wand::search_wand,
+    },
 };
 use log::info;
 use rand::thread_rng;
@@ -53,7 +56,10 @@ fn benchmark(c: &mut Criterion, name: &str, search_fn: SearchFn) {
 }
 
 fn benchmark_maxscore(c: &mut Criterion) {
-    benchmark(c, "max_score", search_maxscore)
+    benchmark(c, "max_score", |index, query, top_k| {
+        let options = MaxScoreOptions::default();
+        search_maxscore(index, query, top_k, options)
+    })
 }
 fn benchmark_wand(c: &mut Criterion) {
     benchmark(c, "wand", search_wand)

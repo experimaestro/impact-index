@@ -14,7 +14,7 @@ use temp_dir::TempDir;
 
 #[test]
 fn test_split_index() {
-    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
+    let mut data = TestIndex::new(100, 10_000, 5., 10, None, Some(10));
     let index = data.indexer.to_index(true);
     let dir = TempDir::new().expect("Could not create temporary directory");
 

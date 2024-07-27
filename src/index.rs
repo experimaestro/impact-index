@@ -84,8 +84,8 @@ pub trait BlockTermImpactIterator: Send {
     ///
     ///  The move can be "shallow", i.e. the index is read when any function
     /// that involves actual posting is invoked
-    /// Returns false if there is no posting with this doc ID at least
-    fn next_min_doc_id(&mut self, doc_id: DocId) -> bool;
+    /// Returns the minimum that can reached (which is greater or equal than doc_id)
+    fn next_min_doc_id(&mut self, doc_id: DocId) -> Option<DocId>;
 
     /// Returns the current term impact (can panic)
     fn current(&self) -> TermImpact;
@@ -120,7 +120,7 @@ pub trait BlockTermImpactIterator: Send {
 impl<'a> Iterator for dyn BlockTermImpactIterator + 'a {
     type Item = TermImpact;
     fn next(&mut self) -> Option<TermImpact> {
-        if self.next_min_doc_id(0) {
+        if self.next_min_doc_id(0).is_some() {
             Some(self.current())
         } else {
             None

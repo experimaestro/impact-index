@@ -357,7 +357,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
 
     /// Move the iterator to the first block where a document of
     /// at least `min_doc_id` is present
-    fn move_iterator(&mut self, min_doc_id: DocId) -> bool {
+    fn move_iterator(&mut self, min_doc_id: DocId) -> Option<DocId> {
         // Loop until the condition is met
         while let Some(info) = self.info {
             if info.max_doc_id >= min_doc_id {
@@ -365,7 +365,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
                     "[{}] Moving iterator OK - max(doc_id) = {} >= {}",
                     self.term_ix, info.max_doc_id, min_doc_id
                 );
-                return true;
+                return Some(min_doc_id);
             }
 
             // Go to the next block
@@ -377,7 +377,9 @@ impl<'a> SparseBuilderIndexIterator<'a> {
                 debug!("[{}] EOF for blocks (move)", self.term_ix);
             }
         }
-        false
+
+        // No result
+        None
     }
 
     const RECORD_SIZE: usize = std::mem::size_of::<DocId>() + std::mem::size_of::<ImpactValue>();
@@ -467,7 +469,7 @@ impl<'a> SparseBuilderBlockTermImpactIterator<'a> {
 }
 
 impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
-    fn next_min_doc_id(&mut self, min_doc_id: DocId) -> bool {
+    fn next_min_doc_id(&mut self, min_doc_id: DocId) -> Option<DocId> {
         // Sets the current minimum document ID
         self.current_min_docid = Some(min_doc_id.max(
             if let Some(impact) = self.current_value.get_mut() {
@@ -476,21 +478,22 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
                 0
             },
         ));
+
         let min_doc_id = self.current_min_docid.expect("Should not be None");
 
         // Move to the block having at least one document greater that min_doc_id
-        let ok = self.iterator.get_mut().move_iterator(min_doc_id);
-
-        if !ok {
-            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix)
-        } else {
+        if let Some(min_doc_id) = self.iterator.get_mut().move_iterator(min_doc_id) {
             debug!(
                 "[{}] We have a candidate for doc_id >= {}",
                 self.iterator.get_mut().term_ix,
                 min_doc_id
-            )
+            );
+
+            Some(min_doc_id)
+        } else {
+            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix);
+            None
         }
-        ok
     }
 
     /// Returns the current document ID

@@ -56,7 +56,7 @@ impl<'a> WandSearch<'a> {
                 iterator: iterator,
                 query_weight: weight,
             };
-            if wrapper.iterator.next_min_doc_id(0) {
+            if wrapper.iterator.next_min_doc_id(0).is_some() {
                 iterators.push(wrapper)
             }
         }
@@ -91,7 +91,11 @@ impl<'a> WandSearch<'a> {
 
     fn advance(&mut self, ix: usize, pivot: DocId) {
         let term_ix = self.pick_term(ix);
-        if !self.iterators[term_ix].iterator.next_min_doc_id(pivot) {
+        if self.iterators[term_ix]
+            .iterator
+            .next_min_doc_id(pivot)
+            .is_none()
+        {
             // Remove this iterator
             self.iterators.remove(term_ix);
         }
