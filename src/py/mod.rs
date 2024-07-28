@@ -244,7 +244,7 @@ impl PyIndexBuilder {
 
 #[pyclass(subclass)]
 pub struct PyDocIdCompressor {
-    inner: Arc<Box<dyn compress::DocIdCompressor>>,
+    inner: Arc<Box<dyn compress::DocIdCompressorFactory>>,
 }
 
 impl PyDocIdCompressor {}
@@ -266,23 +266,39 @@ impl PyEliasFanoCompressor {
 }
 
 #[pyclass(name = "ImpactCompressor", subclass)]
-pub struct PyImpactCompressor {
-    inner: Arc<Box<dyn compress::ImpactCompressor>>,
+pub struct PyImpactCompressorFactory {
+    inner: Arc<Box<dyn compress::ImpactCompressorFactory>>,
 }
 
-impl PyImpactCompressor {}
+impl PyImpactCompressorFactory {}
 
-#[pyclass(name="ImpactQuantizer", extends=PyImpactCompressor)]
+#[pyclass(name="ImpactQuantizer", extends=PyImpactCompressorFactory)]
 pub struct PyImpactQuantizer {}
 
 #[pymethods]
 impl PyImpactQuantizer {
     #[new]
-    fn new(nbits: u32, min: ImpactValue, max: ImpactValue) -> (Self, PyImpactCompressor) {
+    fn new(nbits: u32, min: ImpactValue, max: ImpactValue) -> (Self, PyImpactCompressorFactory) {
         (
             PyImpactQuantizer {},
-            PyImpactCompressor {
+            PyImpactCompressorFactory {
                 inner: Arc::new(Box::new(compress::impact::Quantizer::new(nbits, min, max))),
+            },
+        )
+    }
+}
+
+#[pyclass(name="GlobalImpactQuantizer", extends=PyImpactCompressorFactory)]
+pub struct PyGlobalQuantizerFactory {}
+
+#[pymethods]
+impl PyGlobalQuantizerFactory {
+    #[new]
+    fn new(nbits: u32) -> (Self, PyImpactCompressorFactory) {
+        (
+            PyGlobalQuantizerFactory {},
+            PyImpactCompressorFactory {
+                inner: Arc::new(Box::new(compress::impact::GlobalQuantizerFactory { nbits })),
             },
         )
     }
@@ -312,15 +328,15 @@ impl PyTransform {
 struct PyCompressionTransformFactory {
     max_block_size: usize,
     doc_ids_compressor: Py<PyDocIdCompressor>,
-    impacts_compressor: Py<PyImpactCompressor>,
+    impacts_compressor: Py<PyImpactCompressorFactory>,
 }
 
 impl PyTransformFactory for PyCompressionTransformFactory {
     fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform> {
         Box::new(CompressionTransform {
             max_block_size: self.max_block_size,
-            impacts_compressor: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
-            doc_ids_compressor: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
+            impacts_compressor_factory: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
+            doc_ids_compressor_factory: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
         })
     }
 }
@@ -334,7 +350,7 @@ impl PyCompressionTransform {
     fn new(
         max_block_size: usize,
         doc_ids_compressor: Py<PyDocIdCompressor>,
-        impacts_compressor: Py<PyImpactCompressor>,
+        impacts_compressor: Py<PyImpactCompressorFactory>,
     ) -> (Self, PyTransform) {
         let factory = Box::new(PyCompressionTransformFactory {
             max_block_size: max_block_size,
@@ -384,6 +400,7 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
 
     module.add_class::<PyEliasFanoCompressor>()?;
     module.add_class::<PyImpactQuantizer>()?;
+    module.add_class::<PyGlobalQuantizerFactory>()?;
     module.add_class::<PyCompressionTransform>()?;
     module.add_class::<PySplitIndexTransform>()?;
 

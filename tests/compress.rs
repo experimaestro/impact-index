@@ -13,13 +13,13 @@ use temp_dir::TempDir;
 #[rstest]
 #[case(5. / ((2 << 4) as f64), CompressionTransform {
     max_block_size: 1024,
-    doc_ids_compressor: Box::new(EliasFanoCompressor {}),
-    impacts_compressor: Box::new(Quantizer::new(4, 0., 5.)),
+    doc_ids_compressor_factory: Box::new(EliasFanoCompressor {}),
+    impacts_compressor_factory: Box::new(Quantizer::new(4, 0., 5.)),
 })]
 #[case(0., CompressionTransform {
     max_block_size: 1024,
-    doc_ids_compressor: Box::new(EliasFanoCompressor {}),
-    impacts_compressor: Box::new(Identity {})
+    doc_ids_compressor_factory: Box::new(EliasFanoCompressor {}),
+    impacts_compressor_factory: Box::new(Identity {})
 })]
 fn test_compressed_index(#[case] step: f64, #[case] transform: CompressionTransform) {
     let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));

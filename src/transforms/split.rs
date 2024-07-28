@@ -107,6 +107,9 @@ struct SplitIndexTermIterator<'a> {
     /// Maximum impact value
     max_value: ImpactValue,
 
+    /// Delta
+    delta_value: ImpactValue,
+
     /// Current posting
     current: RefCell<BinaryHeap<SplitIndexTermIteratorHeapValue>>,
 
@@ -170,7 +173,9 @@ impl<'a> BlockTermImpactIterator for SplitIndexTermIterator<'a> {
             let mut element = current.pop().expect("No current element");
             let term_impact = self.iterators[element.index].current();
             element.min_doc_id = term_impact.docid;
-            element.term_impact = Some(self.iterators[element.index].current());
+            let mut posting = self.iterators[element.index].current();
+            posting.value = posting.value.min(self.max_value) + self.delta_value;
+            element.term_impact = Some(posting);
             current.push(element);
         }
     }
@@ -206,6 +211,7 @@ impl SparseIndex for SplitIndex {
             iterators: iterators,
             current: RefCell::new(BinaryHeap::new()),
             max_value: ImpactValue::INFINITY,
+            delta_value: 0.,
             min_doc_id: 0,
         })
     }
@@ -219,12 +225,18 @@ impl SparseIndex for SplitIndex {
                 iterators.push(self.inner.block_iterator(term_ix * self.splits + j));
             }
 
+            let mut delta_value = 0.;
+            if i > 0 {
+                delta_value = -iterators[i - 1].max_value();
+            }
+
             // The maximum impact is bounded by the first iterator
             let max_value = iterators[0].max_value();
             v.push(Box::new(SplitIndexTermIterator {
                 current: RefCell::new(BinaryHeap::new()),
                 iterators,
                 max_value,
+                delta_value,
                 min_doc_id: 0,
             }));
         }

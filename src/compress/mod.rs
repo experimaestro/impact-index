@@ -69,22 +69,35 @@ impl std::fmt::Display for TermBlockInformation {
 //
 
 pub trait Compressor<T>: Sync + Send {
-    fn write(&self, writer: &mut dyn Write, values: &[T], info: &TermBlockInformation);
+    fn write(
+        &self,
+        writer: &mut dyn Write,
+        values: &[T],
+        term_index: TermIndex,
+        info: &TermBlockInformation,
+    );
     fn read<'a>(
         &self,
         slice: Box<dyn Slice + 'a>,
+        term_index: TermIndex,
         info: &TermBlockInformation,
     ) -> Box<dyn Iterator<Item = T> + Send + 'a>;
 }
 
 #[typetag::serde(tag = "type")]
-pub trait DocIdCompressor: Compressor<DocId> {
-    fn clone(&self) -> Box<dyn DocIdCompressor>;
+pub trait DocIdCompressor: Compressor<DocId> {}
+
+pub trait DocIdCompressorFactory: Sync + Send {
+    fn create(&self, index: &dyn SparseIndexView) -> Box<dyn DocIdCompressor>;
+    fn clone(&self) -> Box<dyn DocIdCompressorFactory>;
 }
 
 #[typetag::serde(tag = "type")]
-pub trait ImpactCompressor: Compressor<ImpactValue> {
-    fn clone(&self) -> Box<dyn ImpactCompressor>;
+pub trait ImpactCompressor: Compressor<ImpactValue> {}
+
+pub trait ImpactCompressorFactory: Sync + Send {
+    fn create(&self, index: &dyn SparseIndexView) -> Box<dyn ImpactCompressor>;
+    fn clone(&self) -> Box<dyn ImpactCompressorFactory>;
 }
 
 /// Block-based index information for a term
@@ -133,16 +146,16 @@ pub struct CompressedIndexIterator<'a> {
     index: usize,
 
     // Term index (for reference)
-    term_ix: TermIndex,
+    term_index: TermIndex,
 
     /// Our sparse index
     sparse_index: &'a CompressedIndex,
 }
 
 impl<'a> CompressedIndexIterator<'a> {
-    fn new<'c: 'a>(index: &'c CompressedIndex, term_ix: TermIndex) -> Self {
-        let mut iter = if term_ix < index.information.terms.len() {
-            Box::new(index.information.terms[term_ix].pages.iter())
+    fn new<'c: 'a>(index: &'c CompressedIndex, term_index: TermIndex) -> Self {
+        let mut iter = if term_index < index.information.terms.len() {
+            Box::new(index.information.terms[term_index].pages.iter())
         } else {
             Box::new([].iter())
         };
@@ -167,7 +180,7 @@ impl<'a> CompressedIndexIterator<'a> {
             index: 0,
 
             // Just for information purpose
-            term_ix: term_ix,
+            term_index: term_index,
         }
     }
 
@@ -179,7 +192,7 @@ impl<'a> CompressedIndexIterator<'a> {
             if info.max_doc_id >= min_doc_id {
                 debug!(
                     "[{}] Moving iterator OK - max(doc_id) = {} >= {}",
-                    self.term_ix, info.max_doc_id, min_doc_id
+                    self.term_index, info.max_doc_id, min_doc_id
                 );
                 return true;
             }
@@ -188,9 +201,9 @@ impl<'a> CompressedIndexIterator<'a> {
             self.next_block();
 
             if let Some(info) = self.info {
-                debug!("[{}] Read the next block (move): {}", self.term_ix, info);
+                debug!("[{}] Read the next block (move): {}", self.term_index, info);
             } else {
-                debug!("[{}] EOF for blocks (move)", self.term_ix);
+                debug!("[{}] EOF for blocks (move)", self.term_index);
             }
         }
         false
@@ -202,22 +215,22 @@ impl<'a> CompressedIndexIterator<'a> {
             info.docid_position_range.0 as usize,
             info.docid_position_range.1 as usize,
         );
-        let docid_iterator = self
-            .sparse_index
-            .information
-            .doc_ids_compressor
-            .read(slice, info);
+        let docid_iterator =
+            self.sparse_index
+                .information
+                .doc_ids_compressor
+                .read(slice, self.term_index, info);
         self.docid_iterator = Some(docid_iterator);
 
         let slice = self.sparse_index.impact_buffer.slice(
             info.impact_position_range.0 as usize,
             info.impact_position_range.1 as usize,
         );
-        let value_iterator = self
-            .sparse_index
-            .information
-            .values_compressor
-            .read(slice, info);
+        let value_iterator =
+            self.sparse_index
+                .information
+                .values_compressor
+                .read(slice, self.term_index, info);
         self.impact_iterator = Some(value_iterator);
     }
 
@@ -241,14 +254,14 @@ impl<'a> Iterator for CompressedIndexIterator<'a> {
                 self.next_block();
             }
             if self.info.is_none() {
-                debug!("[{}] EOF for blocks", self.term_ix);
+                debug!("[{}] EOF for blocks", self.term_index);
             }
         }
 
         if let Some(info) = self.info {
             if self.docid_iterator.is_none() {
                 self.read_block(info);
-                debug!("[{}] Loaded block data: {}", self.term_ix, info);
+                debug!("[{}] Loaded block data: {}", self.term_index, info);
             }
 
             if let Some(docid) = self
@@ -297,10 +310,10 @@ struct CompressedBlockTermImpactIterator<'a> {
 }
 
 impl<'a> CompressedBlockTermImpactIterator<'a> {
-    fn new(index: &'a CompressedIndex, term_ix: TermIndex) -> Self {
-        let info = &index.information.terms[term_ix];
+    fn new(index: &'a CompressedIndex, term_index: TermIndex) -> Self {
+        let info = &index.information.terms[term_index];
         Self {
-            iterator: RefCell::new(CompressedIndexIterator::new(index, term_ix)),
+            iterator: RefCell::new(CompressedIndexIterator::new(index, term_index)),
             current_value: RefCell::new(None),
             max_value: info.max_value,
             max_doc_id: info.max_doc_id,
@@ -326,12 +339,12 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
         if self.iterator.get_mut().move_iterator(min_doc_id) {
             debug!(
                 "[{}] We have a candidate for doc_id >= {}",
-                self.iterator.get_mut().term_ix,
+                self.iterator.get_mut().term_index,
                 min_doc_id
             );
             Some(self.min_block_doc_id())
         } else {
-            debug!("[{}] End of iterator", self.iterator.get_mut().term_ix);
+            debug!("[{}] End of iterator", self.iterator.get_mut().term_index);
             None
         }
     }
@@ -341,7 +354,7 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
         let min_docid = self.current_min_docid.expect("Should not be null");
         {
             let iterator = self.iterator.borrow();
-            debug!("[{}] Searching for next {}", iterator.term_ix, min_docid);
+            debug!("[{}] Searching for next {}", iterator.term_index, min_docid);
         }
 
         let mut current_value = self.current_value.borrow_mut();
@@ -354,7 +367,7 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
             let mut iterator = self.iterator.borrow_mut();
             debug!(
                 "[{}] Current DOC ID value is {}",
-                iterator.term_ix,
+                iterator.term_index,
                 if let Some(cv) = current_value.as_ref() {
                     cv.docid as i64
                 } else {
@@ -365,14 +378,17 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
             *current_value = None;
             while let Some(v) = iterator.next() {
                 if v.docid >= min_docid {
-                    debug!("[{}] Returning {} ({})", iterator.term_ix, v.docid, v.value);
+                    debug!(
+                        "[{}] Returning {} ({})",
+                        iterator.term_index, v.docid, v.value
+                    );
 
                     *current_value = Some(v);
                     break;
                 }
                 debug!(
                     "[{}] Skipping {} ({}) / {}",
-                    iterator.term_ix, v.docid, v.value, min_docid
+                    iterator.term_index, v.docid, v.value, min_docid
                 );
             }
 
@@ -381,7 +397,7 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
             let iterator = self.iterator.borrow();
             debug!(
                 "[{}] Current value was good {} >= {}",
-                iterator.term_ix,
+                iterator.term_index,
                 current_value.expect("").docid,
                 min_docid
             );
@@ -430,9 +446,9 @@ impl<'a> BlockTermImpactIterator for CompressedBlockTermImpactIterator<'a> {
 impl SparseIndex for CompressedIndex {
     fn block_iterator(
         &self,
-        term_ix: crate::base::TermIndex,
+        term_index: crate::base::TermIndex,
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
-        Box::new(CompressedBlockTermImpactIterator::new(self, term_ix))
+        Box::new(CompressedBlockTermImpactIterator::new(self, term_index))
     }
 }
 
@@ -447,10 +463,10 @@ pub struct CompressionTransform {
     pub max_block_size: usize,
 
     #[doc = r"Document ID compressor"]
-    pub doc_ids_compressor: Box<dyn DocIdCompressor>,
+    pub doc_ids_compressor_factory: Box<dyn DocIdCompressorFactory>,
 
     #[doc = r"maximum number of records per block"]
-    pub impacts_compressor: Box<dyn ImpactCompressor>,
+    pub impacts_compressor_factory: Box<dyn ImpactCompressorFactory>,
 }
 
 impl IndexTransform for CompressionTransform {
@@ -485,8 +501,8 @@ impl IndexTransform for CompressionTransform {
         let mut index_loader = CompressedIndexLoader {
             information: CompressedIndexInformation {
                 terms: Vec::new(),
-                doc_ids_compressor: self.doc_ids_compressor.clone(),
-                values_compressor: self.impacts_compressor.clone(),
+                doc_ids_compressor: self.doc_ids_compressor_factory.create(index),
+                values_compressor: self.impacts_compressor_factory.create(index),
             },
         };
 
@@ -494,9 +510,9 @@ impl IndexTransform for CompressionTransform {
         let mut docid_position = 0;
 
         // Iterate over terms
-        for term_ix in 0..index.len() {
+        for term_index in 0..index.len() {
             // Read everything
-            let mut it = index.iterator(term_ix);
+            let mut it = index.iterator(term_index);
             let mut flag = true;
 
             let mut term_information = TermBlocksInformation {
@@ -560,11 +576,13 @@ impl IndexTransform for CompressionTransform {
                 index_loader.information.doc_ids_compressor.write(
                     &mut docid_writer,
                     &docids,
+                    term_index,
                     &block_term_information,
                 );
                 index_loader.information.values_compressor.write(
                     &mut impact_writer,
                     &impacts,
+                    term_index,
                     &block_term_information,
                 );
 

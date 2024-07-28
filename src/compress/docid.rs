@@ -2,19 +2,29 @@
 
 use std::io::Write;
 
-use super::{Compressor, DocIdCompressor, TermBlockInformation};
-use crate::{base::DocId, utils::buffer::Slice};
+use super::{Compressor, DocIdCompressor, DocIdCompressorFactory, TermBlockInformation};
+use crate::{
+    base::{DocId, TermIndex},
+    index::SparseIndexView,
+    utils::buffer::Slice,
+};
 use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 use sucds::{EliasFano, EliasFanoBuilder, Searial};
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct EliasFanoCompressor {}
 
 #[typetag::serde]
-impl DocIdCompressor for EliasFanoCompressor {
-    fn clone(&self) -> Box<dyn DocIdCompressor> {
+impl DocIdCompressor for EliasFanoCompressor {}
+
+impl DocIdCompressorFactory for EliasFanoCompressor {
+    fn create(&self, _index: &dyn SparseIndexView) -> Box<dyn DocIdCompressor> {
         Box::new(EliasFanoCompressor {})
+    }
+
+    fn clone(&self) -> Box<dyn DocIdCompressorFactory> {
+        Box::new(Clone::clone(self))
     }
 }
 
@@ -44,7 +54,13 @@ impl<'a> Iterator for EliasFanoIterator {
 }
 
 impl Compressor<DocId> for EliasFanoCompressor {
-    fn write(&self, writer: &mut dyn Write, values: &[DocId], info: &TermBlockInformation) {
+    fn write(
+        &self,
+        writer: &mut dyn Write,
+        values: &[DocId],
+        _term_index: TermIndex,
+        info: &TermBlockInformation,
+    ) {
         let mut c = EliasFanoBuilder::new(
             (info.max_doc_id - info.min_doc_id + 1) as usize,
             values.len(),
@@ -63,6 +79,7 @@ impl Compressor<DocId> for EliasFanoCompressor {
     fn read<'a>(
         &self,
         slice: Box<dyn Slice + 'a>,
+        _term_index: TermIndex,
         info: &TermBlockInformation,
     ) -> Box<dyn Iterator<Item = DocId> + Send + 'a> {
         let data = EliasFano::deserialize_from(slice.data()).expect("Error while reading");

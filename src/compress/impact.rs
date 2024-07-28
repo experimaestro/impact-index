@@ -1,18 +1,23 @@
 //! Methods for compressing impact values
 
+use core::f32;
 use std::io::Write;
 
 use bitstream_io::{BigEndian, BitRead, BitReader, BitWrite, BitWriter};
 use byteorder::{ReadBytesExt, WriteBytesExt};
 
-use super::{Compressor, ImpactCompressor, TermBlockInformation};
+use super::{Compressor, ImpactCompressor, ImpactCompressorFactory, TermBlockInformation};
 use crate::{
-    base::ImpactValue,
+    base::{ImpactValue, TermIndex},
     utils::buffer::{Slice, SliceReader},
 };
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+// ---
+// --- Quantizer
+// ---
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
 
 pub struct Quantizer {
     pub nbits: u32,
@@ -32,6 +37,32 @@ impl Quantizer {
             max: max,
             step: (max - min) / ((levels + 1) as f32),
         }
+    }
+}
+
+#[derive(Clone)]
+
+pub struct GlobalQuantizerFactory {
+    pub nbits: u32,
+}
+
+impl ImpactCompressorFactory for GlobalQuantizerFactory {
+    fn create(&self, index: &dyn crate::index::SparseIndexView) -> Box<dyn ImpactCompressor> {
+        log::info!("Computing global minimum and maximum impact (quantizer)");
+        let mut min = ImpactValue::INFINITY;
+        let mut max = -ImpactValue::INFINITY;
+
+        for term_ix in 0..index.len() {
+            for posting in index.iterator(term_ix) {
+                min = min.min(posting.value);
+                max = max.max(posting.value);
+            }
+        }
+        Box::new(Quantizer::new(self.nbits, min, max))
+    }
+
+    fn clone(&self) -> Box<dyn ImpactCompressorFactory> {
+        Box::new(Clone::clone(self))
     }
 }
 
@@ -60,14 +91,26 @@ impl<'a> Iterator for QuantizerIterator<'a> {
 }
 
 #[typetag::serde]
-impl ImpactCompressor for Quantizer {
-    fn clone(&self) -> Box<dyn ImpactCompressor> {
+impl ImpactCompressor for Quantizer {}
+
+impl ImpactCompressorFactory for Quantizer {
+    fn create(&self, _index: &dyn crate::index::SparseIndexView) -> Box<dyn ImpactCompressor> {
+        Box::new(Clone::clone(self))
+    }
+
+    fn clone(&self) -> Box<dyn ImpactCompressorFactory> {
         Box::new(Clone::clone(self))
     }
 }
 
 impl<'a> Compressor<ImpactValue> for Quantizer {
-    fn write(&self, writer: &mut dyn Write, values: &[ImpactValue], _info: &TermBlockInformation) {
+    fn write(
+        &self,
+        writer: &mut dyn Write,
+        values: &[ImpactValue],
+        _term_index: TermIndex,
+        _info: &TermBlockInformation,
+    ) {
         let mut bit_writer = BitWriter::endian(writer, BigEndian);
 
         for x in values {
@@ -87,6 +130,7 @@ impl<'a> Compressor<ImpactValue> for Quantizer {
     fn read<'b>(
         &self,
         slice: Box<dyn Slice + 'b>,
+        _term_index: TermIndex,
         info: &TermBlockInformation,
     ) -> Box<dyn Iterator<Item = ImpactValue> + Send + 'b> {
         let slice_reader = Box::new(SliceReader::new(slice));
@@ -103,20 +147,34 @@ impl<'a> Compressor<ImpactValue> for Quantizer {
     }
 }
 
-// ----- Identity transform
+// ---
+// --- Identity transform
+// ---
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Identity {}
 
 #[typetag::serde]
-impl ImpactCompressor for Identity {
-    fn clone(&self) -> Box<dyn ImpactCompressor> {
+impl ImpactCompressor for Identity {}
+
+impl ImpactCompressorFactory for Identity {
+    fn create(&self, _index: &dyn crate::index::SparseIndexView) -> Box<dyn ImpactCompressor> {
+        Box::new(Clone::clone(self))
+    }
+
+    fn clone(&self) -> Box<dyn ImpactCompressorFactory> {
         Box::new(Clone::clone(self))
     }
 }
 
 impl<'a> Compressor<ImpactValue> for Identity {
-    fn write(&self, writer: &mut dyn Write, values: &[ImpactValue], _info: &TermBlockInformation) {
+    fn write(
+        &self,
+        writer: &mut dyn Write,
+        values: &[ImpactValue],
+        _term_index: TermIndex,
+        _info: &TermBlockInformation,
+    ) {
         for x in values {
             writer
                 .write_f32::<byteorder::BigEndian>(*x)
@@ -127,6 +185,7 @@ impl<'a> Compressor<ImpactValue> for Identity {
     fn read<'b>(
         &self,
         slice: Box<dyn Slice + 'b>,
+        _term_index: TermIndex,
         info: &TermBlockInformation,
     ) -> Box<dyn Iterator<Item = ImpactValue> + Send + 'b> {
         Box::new(IdentityIterator::<'b> {

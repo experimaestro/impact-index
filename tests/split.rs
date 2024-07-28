@@ -3,11 +3,7 @@ use impact_index::index::SparseIndex;
 use impact_index::transforms::split::SplitIndexTransform;
 use impact_index::{
     base::load_index,
-    compress::{
-        docid::EliasFanoCompressor,
-        impact::{Identity, Quantizer},
-        CompressionTransform,
-    },
+    compress::{docid::EliasFanoCompressor, impact::Identity, CompressionTransform},
     transforms::IndexTransform,
 };
 use temp_dir::TempDir;
@@ -20,8 +16,8 @@ fn test_split_index() {
 
     let sink = Box::new(CompressionTransform {
         max_block_size: 1024,
-        doc_ids_compressor: Box::new(EliasFanoCompressor {}),
-        impacts_compressor: Box::new(Identity {}),
+        doc_ids_compressor_factory: Box::new(EliasFanoCompressor {}),
+        impacts_compressor_factory: Box::new(Identity {}),
     });
 
     let transform = SplitIndexTransform {

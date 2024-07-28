@@ -2,6 +2,7 @@ use impact_index::{
     base::{ImpactValue, TermIndex},
     index::SparseIndex,
     search::{maxscore::MaxScoreOptions, ScoredDocument, TopScoredDocuments},
+    transforms::IndexTransform,
 };
 use log::{debug, info};
 use rstest::rstest;
@@ -136,13 +137,21 @@ fn search_maxscore_default<'a>(
     search_maxscore(index, query, top_k, MaxScoreOptions::default())
 }
 
+enum IndexType {
+    InMemory,
+    Disk,
+    Split2,
+}
+
 #[rstest]
-#[case(true, 100, 1000, 50., 50, 10, None)]
-#[case(true, 100, 1000, 50., 50, 1, None)]
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 10, None)]
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 1, None)]
 // Sparse documents (max 8 postings, 5 in average) )
-#[case(true, 500, 500, 5., 8, 10, Some(1))]
+#[case(IndexType::InMemory, 500, 500, 5., 8, 10, Some(1))]
+#[case(IndexType::Disk, 500, 500, 5., 8, 10, Some(1))]
+#[case(IndexType::Split2, 500, 500, 5., 8, 10, Some(1))]
 fn test_search(
-    #[case] in_memory: bool,
+    #[case] index_type: IndexType,
     #[case] vocabulary_size: usize,
     #[case] document_count: i64,
     #[case] lambda_words: f32,
@@ -151,7 +160,12 @@ fn test_search(
     #[case] seed: Option<u64>,
     #[values(search_wand, search_maxscore_default)] search_fn: SearchFn,
 ) {
-    use impact_index::builder::load_forward_index;
+    use impact_index::{
+        base::load_index,
+        builder::load_forward_index,
+        compress::{docid::EliasFanoCompressor, impact::Identity, CompressionTransform},
+        transforms::split::SplitIndexTransform,
+    };
 
     init_logger();
     // std::env::set_var("RUST_LOG", "trace");
@@ -165,10 +179,24 @@ fn test_search(
         // Use small pages
         Some(10),
     );
-    let mut index = if in_memory {
-        data.indexer.to_index(true)
-    } else {
-        load_forward_index(data.dir.path(), true)
+    let index = match index_type {
+        IndexType::InMemory => Box::new(data.indexer.to_index(true)),
+        IndexType::Disk => Box::new(load_forward_index(data.dir.path(), true)),
+        IndexType::Split2 => {
+            let transform = SplitIndexTransform {
+                sink: Box::new(CompressionTransform {
+                    max_block_size: 1024,
+                    doc_ids_compressor_factory: Box::new(EliasFanoCompressor {}),
+                    impacts_compressor_factory: Box::new(Identity {}),
+                }),
+                quantiles: [1. / 64.].to_vec(),
+            };
+            let split_index_path = data.dir.path().join("split");
+            transform
+                .process(&split_index_path, &data.indexer.to_index(true))
+                .expect("Could not build the new index");
+            load_index(&split_index_path, true)
+        }
     };
 
     // Builds a query from a document
@@ -179,7 +207,7 @@ fn test_search(
         .collect();
 
     // Search with WAND
-    let observed = search_fn(&mut index, &query, top_k);
+    let observed = search_fn(&*index, &query, top_k);
     eprintln!("(1) observed results");
     for (ix, result) in observed.iter().enumerate() {
         eprintln!(
