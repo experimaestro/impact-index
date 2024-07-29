@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use crate::base::{
     load_index, save_index, DocId, ImpactValue, IndexLoader, Len, TermImpact, TermIndex,
 };
-use crate::index::SparseIndexView;
+use crate::index::{SparseIndexInformation, SparseIndexView};
 use crate::{
     index::{BlockTermImpactIterator, SparseIndex},
     transforms::IndexTransform,
@@ -293,6 +293,15 @@ impl Len for SplitIndex {
     }
 }
 
+impl SparseIndexInformation for SplitIndex {
+    fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue) {
+        return (
+            self.inner.value_range(term_ix * self.splits - 1).0,
+            self.inner.value_range((term_ix + 1) * self.splits - 1).1,
+        );
+    }
+}
+
 /// View on the index
 struct SplitIndexView<'a> {
     /// Inner index that contains the postings
@@ -342,11 +351,10 @@ impl<'a> Iterator for SplitIndexViewIterator<'a> {
     }
 }
 
-impl<'a> SparseIndexView for SplitIndexView<'a> {
-    fn iterator<'b>(&'b self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'b> {
+impl<'a> SplitIndexView<'a> {
+    fn compute_threshold(&self, term_ix: TermIndex) {
         // Source term and quantile indices
         let source_term_ix = term_ix / (self.quantiles.len() + 1);
-        let quantile_ix = term_ix % (self.quantiles.len() + 1);
 
         let thresholds = &mut self.thresholds.lock().unwrap();
         let term_thresholds = &mut thresholds[source_term_ix];
@@ -371,8 +379,19 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
             }
             term_thresholds.push(ImpactValue::INFINITY);
         }
+    }
+}
+
+impl<'a> SparseIndexView for SplitIndexView<'a> {
+    fn iterator<'b>(&'b self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'b> {
+        // Source term and quantile indices
+        self.compute_threshold(term_ix);
+        let source_term_ix = term_ix / (self.quantiles.len() + 1);
+        let quantile_ix = term_ix % (self.quantiles.len() + 1);
 
         // Returns the iterator
+        let thresholds = &mut self.thresholds.lock().unwrap();
+        let term_thresholds = &mut thresholds[source_term_ix];
         Box::new(SplitIndexViewIterator {
             iterator: self.source.iterator(source_term_ix),
             min: term_thresholds[quantile_ix],
@@ -384,5 +403,21 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
 impl<'a> Len for SplitIndexView<'a> {
     fn len(&self) -> usize {
         self.source.len() * (self.quantiles.len() + 1)
+    }
+}
+
+impl<'a> SparseIndexInformation for SplitIndexView<'a> {
+    fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue) {
+        // Computes the
+        self.compute_threshold(term_ix);
+        let source_term_ix = term_ix / (self.quantiles.len() + 1);
+        let quantile_ix = term_ix % (self.quantiles.len() + 1);
+
+        let thresholds = &mut self.thresholds.lock().unwrap();
+        let term_thresholds = &mut thresholds[source_term_ix];
+        (
+            term_thresholds[quantile_ix],
+            term_thresholds[quantile_ix + 1],
+        )
     }
 }

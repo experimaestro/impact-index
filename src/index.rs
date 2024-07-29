@@ -72,8 +72,13 @@ impl IndexInformation {
     }
 }
 
+pub trait SparseIndexInformation: Len {
+    /// Get maximum impact value for a term
+    fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue);
+}
+
 /// A very simple
-pub trait SparseIndexView: Send + Sync + Len {
+pub trait SparseIndexView: Send + Sync + SparseIndexInformation {
     /// Basic iterator
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'a>;
 }

@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     base::{save_index, DocId, ImpactValue, IndexLoader, Len, TermImpact, TermIndex},
+    index::SparseIndexInformation,
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
 use log::{debug, info};
@@ -449,6 +450,12 @@ impl SparseIndex for CompressedIndex {
         term_index: crate::base::TermIndex,
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         Box::new(CompressedBlockTermImpactIterator::new(self, term_index))
+    }
+}
+
+impl SparseIndexInformation for CompressedIndex {
+    fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue) {
+        return (0., self.information.terms[term_ix].max_value);
     }
 }
 

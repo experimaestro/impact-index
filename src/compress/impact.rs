@@ -48,16 +48,20 @@ pub struct GlobalQuantizerFactory {
 
 impl ImpactCompressorFactory for GlobalQuantizerFactory {
     fn create(&self, index: &dyn crate::index::SparseIndexView) -> Box<dyn ImpactCompressor> {
-        log::info!("Computing global minimum and maximum impact (quantizer)");
+        log::info!(
+            "Computing global minimum and maximum impact (quantizer) over {} terms",
+            index.len()
+        );
         let mut min = ImpactValue::INFINITY;
         let mut max = -ImpactValue::INFINITY;
 
+        // Compute the maximum over all terms
         for term_ix in 0..index.len() {
-            for posting in index.iterator(term_ix) {
-                min = min.min(posting.value);
-                max = max.max(posting.value);
-            }
+            let (term_min, term_max) = index.value_range(term_ix);
+            min = min.min(term_min);
+            max = max.max(term_max);
         }
+        log::info!("Quantizer bounds: {}-{}", min, max);
         Box::new(Quantizer::new(self.nbits, min, max))
     }
 

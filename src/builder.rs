@@ -15,7 +15,7 @@ use super::{
 };
 use crate::{
     base::{BoxResult, DocId, ImpactValue, TermIndex},
-    index::TermIndexInformation,
+    index::{SparseIndexInformation, TermIndexInformation},
 };
 use crate::{
     base::{Len, TermImpact},
@@ -590,6 +590,12 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
 impl SparseIndex for SparseBuilderIndex {
     fn block_iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
+    }
+}
+
+impl SparseIndexInformation for SparseBuilderIndex {
+    fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue) {
+        return (0., self.terms[term_ix].max_value);
     }
 }
 
