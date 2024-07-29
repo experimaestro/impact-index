@@ -91,13 +91,18 @@ impl TestIndex {
 
 /// Test if the index is the same
 pub fn check_same_index(
-    index_a: &mut dyn BlockTermImpactIterator,
-    index_b: &mut dyn BlockTermImpactIterator,
+    expected: &mut dyn BlockTermImpactIterator,
+    observed: &mut dyn BlockTermImpactIterator,
     impact_eps: f64,
 ) {
-    while let Some(a) = index_a.next() {
-        let b = index_b.next().expect("Index b contains less entries");
-        assert!(a.docid == b.docid);
+    while let Some(a) = expected.next() {
+        let b = observed.next().expect("Index b contains less entries");
+        assert!(
+            a.docid == b.docid,
+            "Expected doc ID {}, got {}",
+            a.docid,
+            b.docid
+        );
         if impact_eps > 0. {
             assert_about_eq!(a.value, b.value, impact_eps);
         } else {

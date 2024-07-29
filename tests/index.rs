@@ -189,7 +189,7 @@ fn test_search(
                     doc_ids_compressor_factory: Box::new(EliasFanoCompressor {}),
                     impacts_compressor_factory: Box::new(Identity {}),
                 }),
-                quantiles: [1. / 64.].to_vec(),
+                quantiles: [63. / 64.].to_vec(),
             };
             let split_index_path = data.dir.path().join("split");
             transform

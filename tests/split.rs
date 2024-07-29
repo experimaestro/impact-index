@@ -22,7 +22,7 @@ fn test_split_index() {
 
     let transform = SplitIndexTransform {
         sink,
-        quantiles: [1. / 64.].to_vec(),
+        quantiles: [50. / 64., 63. / 64.].to_vec(),
     };
 
     transform
@@ -33,8 +33,8 @@ fn test_split_index() {
 
     for term_ix in [0, 5, 27, 99] {
         check_same_index(
-            c_index.block_iterator(term_ix).as_mut(),
             index.block_iterator(term_ix).as_mut(),
+            c_index.block_iterator(term_ix).as_mut(),
             0.,
         );
     }
