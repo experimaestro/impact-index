@@ -368,7 +368,11 @@ impl<'a> SplitIndexView<'a> {
                 .collect();
             values.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-            term_thresholds.push(0.);
+            if values.is_empty() {
+                term_thresholds.push(0.);
+            } else {
+                term_thresholds.push(values[0]);
+            }
             for q in self.quantiles {
                 let ix = (q * values.len() as f64).trunc() as usize;
                 let mut threshold = 0.;
@@ -415,9 +419,6 @@ impl<'a> SparseIndexInformation for SplitIndexView<'a> {
 
         let thresholds = &mut self.thresholds.lock().unwrap();
         let term_thresholds = &mut thresholds[source_term_ix];
-        (
-            term_thresholds[quantile_ix],
-            term_thresholds[quantile_ix + 1],
-        )
+        (term_thresholds[0], term_thresholds[quantile_ix])
     }
 }
