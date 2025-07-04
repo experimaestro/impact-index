@@ -5,6 +5,7 @@ build-backend = "maturin"
 [project]
 name = "impact-index"
 requires-python = ">=3.8"
+version = "0.24"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",

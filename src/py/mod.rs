@@ -7,7 +7,8 @@ use pyo3::{PyClassInitializer, ToPyObject};
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
@@ -182,6 +183,17 @@ impl PySparseIndex {
             let options = MaxScoreOptions::default();
             search_maxscore(index, query, top_k, options)
         })
+    }
+
+    /// Convert into a BMP index
+    fn to_bmp<'a>(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
+        let index = self.index.clone();
+        let output_path = PathBuf::from_str(output).expect("cannot use path");
+        index
+            .convert_to_bmp(&output_path, bsize, compress_range)
+            .expect("Failed to write the CIFF file");
+
+        Ok(())
     }
 
     #[staticmethod]
