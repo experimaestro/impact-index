@@ -17,6 +17,7 @@ use crate::{
     index::SparseIndexInformation,
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
+use indicatif::{ProgressIterator, ProgressStyle};
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
@@ -517,7 +518,7 @@ impl IndexTransform for CompressionTransform {
         let mut docid_position = 0;
 
         // Iterate over terms
-        for term_index in 0..index.len() {
+        for term_index in (0..index.len()).progress().with_message("Processing terms") {
             // Read everything
             let mut it = index.iterator(term_index);
             let mut flag = true;
