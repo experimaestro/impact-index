@@ -591,6 +591,10 @@ impl SparseIndex for SparseBuilderIndex {
     fn block_iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
+    
+    fn max_doc_id(&self) -> DocId {
+        self.terms.iter().map(|term| term.max_doc_id).max().unwrap_or(0)
+    }
 }
 
 impl SparseIndexInformation for SparseBuilderIndex {

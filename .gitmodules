@@ -1,0 +1,4 @@
+[submodule "BMP"]
+	path = BMP
+	url = https://github.com/bpiwowar/BMP.git
+	branch = main

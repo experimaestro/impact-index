@@ -1,6 +1,6 @@
 [package]
 name = "impact-index"
-version = "0.23.0"
+version = "0.26.1"
 edition = "2021"
 authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
 license = "GPL-2.0-or-later"
@@ -30,12 +30,14 @@ pyo3-log = "0.9.0"
 tokio = { version = "1", features = ["full"] }
 numpy = "0.20.0"
 ndarray = { version = "0.15.4", features = [ "serde" ] }
+serde = { version = "^1.0", features = ["derive"] }
 simple-error = "0.2.3"
 sucds = "0.5.0"
 env_logger = "0.9.3"
 typetag = "0.2"
 memmap2 = "0.5.8"
 self_cell = "0.10.2"
+bincode = "1.3.3"
 ouroboros = "0.15"
 intertrait = "0.2.2"
 derivative = "2.2.0"
@@ -47,8 +49,10 @@ log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_in
 indicatif = "0.17.8"
 # Serialization
 ciborium = { version = "0.2" }
-serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.120"
+bmp = { path = "BMP" }
+protobuf = "^2.27"
+
 
 [dev-dependencies]
 criterion = "0.4.0"

@@ -452,6 +452,10 @@ impl SparseIndex for CompressedIndex {
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         Box::new(CompressedBlockTermImpactIterator::new(self, term_index))
     }
+    
+    fn max_doc_id(&self) -> DocId {
+        self.information.terms.iter().map(|term| term.max_doc_id).max().unwrap_or(0)
+    }
 }
 
 impl SparseIndexInformation for CompressedIndex {
