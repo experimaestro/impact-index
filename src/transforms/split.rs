@@ -285,7 +285,7 @@ impl SparseIndex for SplitIndex {
         }
         v
     }
-    
+
     fn max_doc_id(&self) -> DocId {
         SparseIndex::max_doc_id(&*self.inner)
     }
@@ -406,7 +406,7 @@ impl<'a> SparseIndexView for SplitIndexView<'a> {
             max: term_thresholds[quantile_ix + 1],
         })
     }
-    
+
     fn max_doc_id(&self) -> DocId {
         self.source.max_doc_id()
     }

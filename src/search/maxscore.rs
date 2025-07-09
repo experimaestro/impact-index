@@ -65,7 +65,7 @@ impl MaxScoreTermIterator<'_> {
 #[derivative(Default)]
 pub struct MaxScoreOptions {
     #[derivative(Default(value = "true"))]
-    length_based_ordering: bool,
+    pub length_based_ordering: bool,
 }
 
 /*

@@ -5,13 +5,13 @@ use std::fs::File;
 use std::io::{BufWriter, Result, Write};
 use std::path::Path;
 
+use crate::base::{DocId, ImpactValue, Len, TermIndex};
 use bmp::index::forward_index::ForwardIndexBuilder;
 use bmp::index::inverted_index::IndexBuilder;
+use bmp::proto::{DocRecord, Header, Posting, PostingsList};
 use indicatif::{ProgressBar, ProgressStyle};
-use serde::{Deserialize, Serialize};
 use protobuf::CodedOutputStream;
-use bmp::proto::{Header, PostingsList, Posting, DocRecord};
-use crate::base::{DocId, ImpactValue, Len, TermIndex};
+use serde::{Deserialize, Serialize};
 
 use crate::base::TermImpact;
 
@@ -150,7 +150,7 @@ pub trait AsSparseIndexView {
 fn pb_style() -> ProgressStyle {
     const DEFAULT_PROGRESS_TEMPLATE: &str =
         "{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {count}/{total} ({eta})";
-    
+
     ProgressStyle::default_bar()
         .template(DEFAULT_PROGRESS_TEMPLATE)
         .progress_chars("=> ")
@@ -193,42 +193,33 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
         }
         let step = (LEVELS as f32) / (max_value - min_value);
         let quantize = move |value: f32| -> u32 {
-            (((value - min_value) * step) as i32).clamp(0, LEVELS-1) as u32
+            (((value - min_value) * step) as i32).clamp(0, LEVELS - 1) as u32
         };
 
-
         {
-
             builder = IndexBuilder::new(num_documents as usize, bsize);
-    
+
             eprintln!("Processing postings");
             let progress = ProgressBar::new(u64::try_from(index.len()).expect("error"));
             progress.set_style(pb_style());
             progress.set_draw_delta(10);
 
-    
             for term_ix in 0..index.len() {
-                let postings: Vec<(u32, u32)> = 
-                    index
+                let postings: Vec<(u32, u32)> = index
                     .iterator(term_ix)
-                    .map(|p| {
-                        (
-                            p.docid as u32,
-                            quantize(p.value),
-                        )
-                    })
+                    .map(|p| (p.docid as u32, quantize(p.value)))
                     .collect();
                 builder.insert_term(&term_ix.to_string(), postings);
                 progress.inc(1);
             }
             progress.finish();
-    
+
             eprintln!("Processing document names");
             let progress = ProgressBar::new(u64::try_from(num_documents).expect(""));
             progress.set_style(pb_style());
             progress.set_draw_delta((num_documents / 100) as u64);
-    
-            for doc_ix in 0..num_documents {    
+
+            for doc_ix in 0..num_documents {
                 builder.insert_document(&doc_ix.to_string());
                 progress.inc(1);
             }
@@ -242,20 +233,15 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
         let progress = ProgressBar::new(index.len() as u64);
         progress.set_style(pb_style());
         progress.set_draw_delta((index.len() / 100) as u64);
-    
+
         let mut fwd_builder = ForwardIndexBuilder::new(num_documents as usize);
-    
+
         for term_id in 0..index.len() {
             let posting_list: Vec<(u32, u32)> = index
                 .iterator(term_id)
-                .map(|p| {
-                    (
-                        p.docid as u32,
-                        quantize(p.value)
-                    )
-                })
+                .map(|p| (p.docid as u32, quantize(p.value)))
                 .collect();
-    
+
             fwd_builder.insert_posting_list(term_id as u32, &posting_list);
             progress.inc(1);
         }
@@ -265,7 +251,7 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
         // }
         progress.finish();
         eprintln!("Converting to blocked forward index");
-    
+
         let forward_index = fwd_builder.build();
         let b_forward_index = bmp::index::forward_index::fwd2bfwd(&forward_index, bsize);
         eprintln!("block numbers: {}", b_forward_index.data.len());
@@ -286,10 +272,9 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
         // Serialize the index directly into a file using bincode
         bincode::serialize_into(writer, &(&inverted_index, &b_forward_index))
             .expect("Failed to serialize");
-    
+
         Ok(())
     }
-        
 
     fn to_ciff(&self, writer: &mut dyn Write, quantization: u128) {
         let mut output = CodedOutputStream::new(writer);
@@ -297,7 +282,7 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
 
         let mut header = Header::new();
         header.set_version(1);
-        let num_documents = (index_view.max_doc_id() + 1)  as i32;
+        let num_documents = (index_view.max_doc_id() + 1) as i32;
         header.set_num_docs(num_documents);
         header.set_num_postings_lists(index_view.len() as i32);
         header.set_total_postings_lists(index_view.len() as i32);
@@ -306,7 +291,7 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
 
         header.set_total_terms_in_collection(0);
         header.set_average_doclength(0.);
-        
+
         // Write header
         output.write_message_no_tag::<Header>(&header).ok();
 
@@ -339,11 +324,10 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
             }
 
             output.write_message_no_tag::<PostingsList>(&list).ok();
-
         }
 
         // Writer documents
-        for doc_ix in 0..(1+index_view.max_doc_id()) {
+        for doc_ix in 0..(1 + index_view.max_doc_id()) {
             let mut doc = DocRecord::default();
             doc.set_collection_docid(doc_ix.to_string());
             doc.set_docid(doc_ix as i32);
@@ -375,11 +359,10 @@ where
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'a> {
         Box::new(SparseIndexViewIterator(self.block_iterator(term_ix)))
     }
-    
+
     fn max_doc_id(&self) -> DocId {
         SparseIndex::max_doc_id(self)
     }
-
 }
 
 pub struct ValueIterator<'a> {

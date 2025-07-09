@@ -452,9 +452,14 @@ impl SparseIndex for CompressedIndex {
     ) -> Box<dyn super::index::BlockTermImpactIterator + '_> {
         Box::new(CompressedBlockTermImpactIterator::new(self, term_index))
     }
-    
+
     fn max_doc_id(&self) -> DocId {
-        self.information.terms.iter().map(|term| term.max_doc_id).max().unwrap_or(0)
+        self.information
+            .terms
+            .iter()
+            .map(|term| term.max_doc_id)
+            .max()
+            .unwrap_or(0)
     }
 }
 
@@ -522,7 +527,7 @@ impl IndexTransform for CompressionTransform {
         let mut docid_position = 0;
 
         // Iterate over terms
-        for term_index in (0..index.len()).progress().with_message("Processing terms") {
+        for term_index in (0..index.len()).progress() {
             // Read everything
             let mut it = index.iterator(term_index);
             let mut flag = true;

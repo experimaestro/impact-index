@@ -46,7 +46,7 @@ byteorder = "1.4.3"
 bitstream-io = "2.3"
 # Progress bars & log
 log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_info"] }
-indicatif = "0.17.8"
+indicatif = "0.15.0"
 # Serialization
 ciborium = { version = "0.2" }
 serde_json = "1.0.120"
