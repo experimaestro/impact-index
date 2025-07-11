@@ -482,7 +482,7 @@ pub struct CompressionTransform {
     #[doc = r"Document ID compressor"]
     pub doc_ids_compressor_factory: Box<dyn DocIdCompressorFactory>,
 
-    #[doc = r"maximum number of records per block"]
+    #[doc = r"Impact value compressor"]
     pub impacts_compressor_factory: Box<dyn ImpactCompressorFactory>,
 }
 

@@ -245,13 +245,9 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
             fwd_builder.insert_posting_list(term_id as u32, &posting_list);
             progress.inc(1);
         }
-        // for (term_id, posting_list) in inverted_index.posting_lists().iter().enumerate() {
-        //     fwd_builder.insert_posting_list(term_id as u32, posting_list);
-        //     progress.inc(1);
-        // }
         progress.finish();
-        eprintln!("Converting to blocked forward index");
 
+        eprintln!("Converting to blocked forward index");
         let forward_index = fwd_builder.build();
         let b_forward_index = bmp::index::forward_index::fwd2bfwd(&forward_index, bsize);
         eprintln!("block numbers: {}", b_forward_index.data.len());

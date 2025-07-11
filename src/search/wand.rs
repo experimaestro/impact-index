@@ -50,6 +50,12 @@ impl<'a> WandSearch<'a> {
         let mut iterators = Vec::new();
 
         for (&ix, &weight) in query.iter() {
+            // Discard a term if the index does not match
+            if ix >= index.len() {
+                debug!("Discarding term with index {}", ix);
+                continue;
+            }
+
             let iterator = index.block_iterator(ix);
 
             let mut wrapper = BlockTermImpactIteratorWrapper {

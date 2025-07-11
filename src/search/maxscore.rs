@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use derivative::Derivative;
-use log::debug;
+use log::{debug};
 
 use crate::{
     base::{DocId, ImpactValue, TermImpact},
@@ -85,6 +85,13 @@ pub fn search_maxscore<'a>(
     let mut theta: f64;
 
     for (&ix, &weight) in query.iter() {
+        // Discard a term if the index does not match
+        if ix >= index.len() {
+            debug!("Discarding term with index {}", ix);
+            continue;
+        }
+
+        // Adds the iterators for this term
         for iterator in index.block_iterators(ix) {
             let max_value = ((&iterator).max_value() * weight) as f64;
 
