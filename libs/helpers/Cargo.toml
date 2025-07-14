@@ -7,6 +7,7 @@ edition = "2021"
 name = "helpers"
 
 [dependencies]
+log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_info"] }
 temp-dir = "0.1.11"
 rand_distr = "0.4.3"
 rand = "0.8.5"

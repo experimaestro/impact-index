@@ -1,4 +1,8 @@
+use std::collections::HashSet;
+
 use helpers::index::{check_same_index, TestIndex};
+use impact_index::base::DocId;
+use impact_index::builder::BuilderOptions;
 use impact_index::index::SparseIndex;
 use impact_index::transforms::split::SplitIndexTransform;
 use impact_index::{
@@ -10,7 +14,18 @@ use temp_dir::TempDir;
 
 #[test]
 fn test_split_index() {
-    let mut data = TestIndex::new(100, 10_000, 5., 10, None, Some(10));
+    let mut data = TestIndex::new(
+        100,
+        10_000,
+        5.,
+        10,
+        None,
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
     let index = data.indexer.to_index(true);
     let dir = TempDir::new().expect("Could not create temporary directory");
 

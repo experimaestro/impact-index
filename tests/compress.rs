@@ -22,7 +22,22 @@ use temp_dir::TempDir;
     impacts_compressor_factory: Box::new(Identity {})
 })]
 fn test_compressed_index(#[case] step: f64, #[case] transform: CompressionTransform) {
-    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
+    use std::collections::HashSet;
+
+    use impact_index::{base::DocId, builder::BuilderOptions};
+
+    let mut data = TestIndex::new(
+        100,
+        1000,
+        5.,
+        10,
+        None,
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
     let index = data.indexer.to_index(true);
 
     let dir = TempDir::new().expect("Could not create temporary directory");

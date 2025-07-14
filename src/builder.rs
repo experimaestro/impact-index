@@ -1,13 +1,15 @@
 use std::{
     cell::RefCell,
-    fs::File,
+    fs::{self, File},
     io::{Seek, Write},
     path::{Path, PathBuf},
 };
 
 use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use log::debug;
+use derivative::Derivative;
+use log::{debug, info};
 use ndarray::{ArrayBase, Data, Ix1};
+use serde::{Deserialize, Serialize};
 
 use super::{
     index::{BlockTermImpactIterator, SparseIndex},
@@ -27,6 +29,24 @@ use crate::{
 *
 */
 
+#[derive(Derivative, Clone)]
+#[derivative(Default)]
+pub struct BuilderOptions {
+    /// Build a checkpoint every X documents
+    /// (0 means no check-pointing)
+    #[derivative(Default(value = "0"))]
+    pub checkpoint_frequency: DocId,
+
+    // Maximum number of postings For a term, 16 * 1024 postings by
+    // default, that is roughly 4Gb of max. memory in total
+    // with a vocabular of 32k tokens
+    #[derivative(Default(value = "16384"))]
+    pub in_memory_threshold: usize,
+}
+
+/// Holds a block of impacts together
+/// with the information
+#[derive(Serialize, Deserialize)]
 struct PostingsInformation {
     postings: Vec<TermImpact>,
     information: TermIndexPageInformation,
@@ -46,7 +66,9 @@ impl PostingsInformation {
 }
 
 struct TermsImpacts {
-    in_memory_threshold: usize,
+    /// When using checkpointing, this is the last doc ID
+    checkpoint_doc_id: DocId,
+    options: BuilderOptions,
     folder: PathBuf,
     postings_file: std::fs::File,
     information: IndexInformation,
@@ -54,32 +76,93 @@ struct TermsImpacts {
 }
 
 impl TermsImpacts {
-    /// Create a new term impacts in memory structure
-    fn new(folder: &Path) -> TermsImpacts {
+    /**
+     * Create a new term impacts in memory structure
+     */
+    fn new(folder: &Path, options: &BuilderOptions) -> TermsImpacts {
         let path = folder.join(format!("postings.dat"));
 
-        TermsImpacts {
-            // Maximum number of postings For a term, 16 * 1024 postings by
-            // default, that is roughly 4Gb of max. memory in total
-            // with a vocabular of 32k tokens
-            in_memory_threshold: 16 * 1024,
+        let mut file_options = File::options();
+        file_options.read(true).write(true).create(true);
+
+        if options.checkpoint_frequency == 0 {
+            file_options.truncate(true);
+        } else {
+            file_options.truncate(false);
+        }
+
+        let mut _self = TermsImpacts {
+            checkpoint_doc_id: 0,
+            options: options.clone(),
             folder: folder.to_path_buf(),
-            postings_file: File::options()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(true)
+            postings_file: file_options
                 .open(path)
-                .expect("Error while creating file"),
+                .expect("Error while creating postings file."),
             postings_information: Vec::new(),
             information: IndexInformation::new(),
+        };
+
+        // Check if there is a checkpoint
+        if options.checkpoint_frequency > 0 {
+            let info_path = _self.folder.join(format!("checkpoint.cbor"));
+            if fs::exists(&info_path).expect("error while checking if checkpoint exists") {
+                let ckpt_file = File::options()
+                    .read(true)
+                    .open(info_path)
+                    .expect("Error while opening checkpoint file");
+
+                let pos: u64;
+                (
+                    _self.information,
+                    _self.postings_information,
+                    pos,
+                    _self.checkpoint_doc_id,
+                ) = ciborium::de::from_reader(ckpt_file).expect("error while reading checkpoint");
+
+                _self
+                    .postings_file
+                    .seek(std::io::SeekFrom::Start(pos))
+                    .expect("Error while moving in the posting file");
+
+                info!(
+                    "Read checkpoint (current doc ID {})",
+                    _self.checkpoint_doc_id
+                );
+            }
         }
+
+        _self
     }
 
-    fn set_in_memory_threshold(&mut self, in_memory_threshold: usize) {
-        self.in_memory_threshold = in_memory_threshold;
-    }
+    /// Build a checkpoint
+    fn checkpoint(&mut self, doc_id: DocId) {
+        info!("Check pointing index ({})", doc_id);
+        self.postings_file
+            .flush()
+            .expect("error when flushing the posting file");
 
+        let info_path = self.folder.join(format!("checkpoint.cbor"));
+        let tmp_info_path = self.folder.join(format!("checkpoint.cbor.tmp"));
+        let info_file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp_info_path)
+            .expect("Error while creating checkpoint file");
+
+        let pos = self.postings_file.stream_position().expect("");
+        ciborium::ser::into_writer(
+            &(&self.information, &self.postings_information, pos, doc_id),
+            info_file,
+        )
+        .expect("Error while serializing");
+
+        // Move file to checkpoint
+        fs::rename(tmp_info_path, info_path).expect("Error when moving checkpoint.cbor in place");
+
+        // And then set the last checkpoint
+        self.checkpoint_doc_id = doc_id;
+    }
     /// Adds a term for a given document
     fn add_impact(
         &mut self,
@@ -131,7 +214,7 @@ impl TermsImpacts {
         info.max_doc_id = docid;
 
         // Flush if needed
-        if self.postings_information[term_ix].postings.len() > self.in_memory_threshold {
+        if self.postings_information[term_ix].postings.len() > self.options.in_memory_threshold {
             self.flush(term_ix)?;
         }
         Ok(())
@@ -151,6 +234,7 @@ impl TermsImpacts {
             term_ix, position, len_postings
         );
 
+        // Starts with a fresh PostingsInformation for this term
         let mut postings_info = std::mem::replace(
             &mut self.postings_information[term_ix],
             PostingsInformation::new(),
@@ -195,16 +279,16 @@ pub struct Indexer {
 }
 
 impl Indexer {
-    pub fn new(folder: &Path) -> Indexer {
+    pub fn new(folder: &Path, options: &BuilderOptions) -> Indexer {
         Indexer {
-            impacts: TermsImpacts::new(folder),
+            impacts: TermsImpacts::new(folder, options),
             folder: folder.to_path_buf(),
             built: false,
         }
     }
 
-    pub fn set_in_memory_threshold(&mut self, in_memory_threshold: usize) {
-        self.impacts.set_in_memory_threshold(in_memory_threshold);
+    pub fn get_checkpoint_doc_id(&self) -> DocId {
+        self.impacts.checkpoint_doc_id
     }
 
     pub fn add<S, T>(
@@ -228,6 +312,15 @@ impl Indexer {
         for ix in 0..terms.len() {
             self.impacts.add_impact(terms[ix], docid, values[ix])?;
         }
+
+        // Flush terms that have not been flushed for a long time (recovery)
+        if (self.impacts.options.checkpoint_frequency > 0)
+            && (docid >= self.impacts.options.checkpoint_frequency + self.impacts.checkpoint_doc_id)
+        {
+            // Perform a checkpoint
+            self.impacts.checkpoint(docid);
+        }
+
         Ok(())
     }
 

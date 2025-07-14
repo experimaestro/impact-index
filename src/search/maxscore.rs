@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use derivative::Derivative;
-use log::{debug};
+use log::debug;
 
 use crate::{
     base::{DocId, ImpactValue, TermImpact},

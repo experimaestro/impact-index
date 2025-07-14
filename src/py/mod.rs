@@ -13,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
 
+use crate::builder::BuilderOptions;
 use crate::compress;
 use crate::compress::docid::EliasFanoCompressor;
 use crate::compress::CompressionTransform;
@@ -207,6 +208,38 @@ impl PySparseIndex {
     }
 }
 
+#[pyclass(name = "BuilderOptions")]
+struct PyBuilderOptions(BuilderOptions);
+
+#[pymethods]
+impl PyBuilderOptions {
+    #[new]
+    fn new() -> Self {
+        PyBuilderOptions {
+            0: BuilderOptions::default(),
+        }
+    }
+    #[getter]
+    fn checkpoint_frequency(&self) -> DocId {
+        self.0.checkpoint_frequency
+    }
+
+    #[setter]
+    fn set_checkpoint_frequency(&mut self, value: DocId) {
+        self.0.checkpoint_frequency = value;
+    }
+
+    #[getter]
+    fn in_memory_threshold(&self) -> usize {
+        self.0.in_memory_threshold
+    }
+
+    #[setter]
+    fn set_in_memory_threshold(&mut self, value: usize) {
+        self.0.in_memory_threshold = value;
+    }
+}
+
 #[pyclass(name = "IndexBuilder")]
 pub struct PyIndexBuilder {
     indexer: Arc<Mutex<SparseIndexer>>,
@@ -220,9 +253,12 @@ unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'
 /// Each document is a sparse vector
 impl PyIndexBuilder {
     #[new]
-    fn new(folder: &str) -> Self {
+    fn new(folder: &str, options: &PyBuilderOptions) -> Self {
         PyIndexBuilder {
-            indexer: Arc::new(Mutex::new(SparseIndexer::new(Path::new(folder)))),
+            indexer: Arc::new(Mutex::new(SparseIndexer::new(
+                Path::new(folder),
+                &options.0,
+            ))),
         }
     }
 

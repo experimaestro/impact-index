@@ -1,5 +1,6 @@
 use impact_index::{
-    base::{ImpactValue, TermIndex},
+    base::{DocId, ImpactValue, TermIndex},
+    builder::BuilderOptions,
     index::SparseIndex,
     search::{maxscore::MaxScoreOptions, ScoredDocument, TopScoredDocuments},
     transforms::IndexTransform,
@@ -11,7 +12,10 @@ use helpers::index::TestIndex;
 use impact_index::base::SearchFn;
 use impact_index::search::{maxscore::search_maxscore, wand::search_wand};
 use rand_distr::{Distribution, LogNormal};
-use std::{collections::HashMap, fmt::Display};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Display,
+};
 
 /// Initialize the logger
 fn init_logger() {
@@ -51,7 +55,18 @@ where
 
 #[test]
 fn test_index() {
-    let mut data = TestIndex::new(100, 1000, 5., 10, None, Some(10));
+    let mut data = TestIndex::new(
+        100,
+        1000,
+        5.,
+        10,
+        None,
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
     let index = data.indexer.to_index(true);
 
     eprintln!("Index built in {}", &data.dir.path().display());
@@ -144,25 +159,33 @@ enum IndexType {
 }
 
 #[rstest]
-#[case(IndexType::InMemory, 100, 1000, 50., 50, 10, None)]
-#[case(IndexType::InMemory, 100, 1000, 50., 50, 1, None)]
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 10, None, 0, vec![])]
+// Checkpoint at 800, interrupts at 820
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 10, None, 800, vec![820])]
+// Checkpoint every 300 documents, interrupts at 820
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 10, None, 300, vec![820])]
+#[case(IndexType::InMemory, 100, 1000, 50., 50, 1, None, 0, vec![])]
 // Sparse documents (max 8 postings, 5 in average) )
-#[case(IndexType::InMemory, 500, 500, 5., 8, 10, Some(1))]
-#[case(IndexType::Disk, 500, 500, 5., 8, 10, Some(1))]
-#[case(IndexType::Split2, 500, 500, 5., 8, 10, Some(1))]
+#[case(IndexType::InMemory, 500, 500, 5., 8, 10, Some(1), 0, vec![])]
+#[case(IndexType::Disk, 500, 500, 5., 8, 10, Some(1), 0, vec![])]
+#[case(IndexType::Split2, 500, 500, 5., 8, 10, Some(1), 0, vec![])]
 fn test_search(
     #[case] index_type: IndexType,
     #[case] vocabulary_size: usize,
-    #[case] document_count: i64,
+    #[case] document_count: DocId,
     #[case] lambda_words: f32,
     #[case] max_words: usize,
     #[case] top_k: usize,
     #[case] seed: Option<u64>,
+    #[case] checkpoint_frequency: DocId,
+    #[case] index_interruptions: Vec<DocId>,
     #[values(search_wand, search_maxscore_default)] search_fn: SearchFn,
 ) {
+    use std::collections::HashSet;
+
     use impact_index::{
         base::load_index,
-        builder::load_forward_index,
+        builder::{load_forward_index, BuilderOptions},
         compress::{docid::EliasFanoCompressor, impact::Identity, CompressionTransform},
         transforms::split::SplitIndexTransform,
     };
@@ -170,6 +193,8 @@ fn test_search(
     init_logger();
     // std::env::set_var("RUST_LOG", "trace");
     debug!("Search test start");
+    let index_interruptions_set = HashSet::<DocId>::from_iter(index_interruptions.iter().copied());
+
     let mut data = TestIndex::new(
         vocabulary_size,
         document_count,
@@ -177,7 +202,11 @@ fn test_search(
         max_words,
         seed,
         // Use small pages
-        Some(10),
+        BuilderOptions {
+            in_memory_threshold: 10,
+            checkpoint_frequency: checkpoint_frequency,
+        },
+        &index_interruptions_set,
     );
     let index = match index_type {
         IndexType::InMemory => Box::new(data.indexer.to_index(true)),

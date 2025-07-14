@@ -1,13 +1,14 @@
+use log::info;
 use ntest::assert_about_eq;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rand::{rngs::StdRng, SeedableRng};
 use temp_dir::TempDir;
 
 use crate::documents::{create_document, document_vectors, TestDocument};
 use impact_index::{
-    base::{TermImpact, TermIndex},
-    builder::Indexer,
+    base::{DocId, TermImpact, TermIndex},
+    builder::{BuilderOptions, Indexer},
     index::BlockTermImpactIterator,
 };
 
@@ -19,21 +20,54 @@ pub struct TestIndex {
     pub documents: Vec<TestDocument>,
 }
 
+/// Represents a test index used for creating and managing a temporary index
+/// with generated documents and terms.
+///
+/// # Parameters
+/// - `vocabulary_size`: The size of the vocabulary to be used in the index.
+/// - `document_count`: The number of documents to be generated and indexed.
+/// - `lambda_words`: A parameter controlling the distribution of number of
+///   words in the documents.
+/// - `max_words`: The maximum number of words.
+/// - `seed`: An optional seed for random number generation, ensuring
+///   reproducibility.
+/// - `options`: Configuration options for the index builder.
+/// - `interrupt_indexing`: A vector of document IDs that can be used to
+///   interrupt indexing (to test recovery).
+///
+/// # Returns
+/// A new instance of `TestIndex` containing the generated documents, terms, and
+/// the built index.
+///
+/// # Panics
+/// - Panics if the temporary directory cannot be created.
+/// - Panics if there is an error while adding terms to the index.
+/// - Panics if there is an error while building the index.
+///
+/// # Example
+/// ```rust
+/// let test_index = TestIndex::new(
+///     1000, // vocabulary_size
+///     10,   // document_count
+///     0.5,  // lambda_words
+///     100,  // max_words
+///     Some(42), // seed
+///     BuilderOptions::default(), // options
+///     &vec![] // interrupt_indexing
+/// );
+/// ```
 impl TestIndex {
     pub fn new(
         vocabulary_size: usize,
-        document_count: i64,
+        document_count: DocId,
         lambda_words: f32,
         max_words: usize,
         seed: Option<u64>,
-        in_memory_threshold: Option<usize>,
+        options: BuilderOptions,
+        interrupt_indexing: &HashSet<DocId>,
     ) -> Self {
         let dir = TempDir::new().expect("Could not create temporary directory");
-        let mut indexer = Indexer::new(&dir.path());
-
-        if let Some(v) = in_memory_threshold {
-            indexer.set_in_memory_threshold(v);
-        }
+        let mut indexer = Indexer::new(&dir.path(), &options);
 
         let mut all_terms = HashMap::<TermIndex, Vec<TermImpact>>::new();
         let mut documents = Vec::<TestDocument>::new();
@@ -49,9 +83,8 @@ impl TestIndex {
             let doc_id = ix.try_into().unwrap();
             let document = create_document(lambda_words, max_words, vocabulary_size, &mut rng);
 
-            let (terms, values) = document_vectors(&document);
-
             // Add those to the index
+            let (terms, values) = document_vectors(&document);
             indexer
                 .add(doc_id, &terms, &values)
                 .expect("Error while adding terms to the index");
@@ -75,6 +108,26 @@ impl TestIndex {
             }
 
             documents.push(document);
+
+            // Interrupts indexing to verify that checkpointing is working
+            if interrupt_indexing.contains(&ix) {
+                // creates a new indexer
+                indexer = Indexer::new(&dir.path(), &options);
+                let doc_id = indexer.get_checkpoint_doc_id();
+
+                // and add back the documents until the current index
+                info!(
+                    "Recovering by adding back the document {} -> {}",
+                    doc_id + 1,
+                    ix
+                );
+                for ix2 in (doc_id + 1)..=ix {
+                    let (terms, values) = document_vectors(&documents[ix2 as usize]);
+                    indexer
+                        .add(ix2, &terms, &values)
+                        .expect("Error while adding terms to the index");
+                }
+            }
         }
 
         // Build the index

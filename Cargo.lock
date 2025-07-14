@@ -532,6 +532,7 @@ name = "helpers"
 version = "0.0.1"
 dependencies = [
  "impact-index",
+ "log",
  "ndarray",
  "ntest",
  "rand",
