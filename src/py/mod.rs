@@ -281,6 +281,11 @@ impl PyIndexBuilder {
         Ok(())
     }
 
+    fn get_checkpoint_doc_id(&self) -> Option<DocId> {
+        let indexer = self.indexer.blocking_lock();
+        indexer.get_checkpoint_doc_id()
+    }
+
     fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
         let mut indexer = self.indexer.blocking_lock();
         indexer.build().expect("Error while building index");

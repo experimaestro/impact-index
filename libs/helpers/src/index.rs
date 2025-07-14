@@ -113,7 +113,7 @@ impl TestIndex {
             if interrupt_indexing.contains(&ix) {
                 // creates a new indexer
                 indexer = Indexer::new(&dir.path(), &options);
-                let doc_id = indexer.get_checkpoint_doc_id();
+                let doc_id = indexer.get_checkpoint_doc_id().unwrap();
 
                 // and add back the documents until the current index
                 info!(

@@ -1,4 +1,3 @@
-from tempfile import tempdir
 import numpy as np
 import impact_index
 import tempfile

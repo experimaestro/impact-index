@@ -67,7 +67,7 @@ impl PostingsInformation {
 
 struct TermsImpacts {
     /// When using checkpointing, this is the last doc ID
-    checkpoint_doc_id: DocId,
+    checkpoint_doc_id: Option<DocId>,
     options: BuilderOptions,
     folder: PathBuf,
     postings_file: std::fs::File,
@@ -92,7 +92,7 @@ impl TermsImpacts {
         }
 
         let mut _self = TermsImpacts {
-            checkpoint_doc_id: 0,
+            checkpoint_doc_id: None,
             options: options.clone(),
             folder: folder.to_path_buf(),
             postings_file: file_options
@@ -126,7 +126,7 @@ impl TermsImpacts {
 
                 info!(
                     "Read checkpoint (current doc ID {})",
-                    _self.checkpoint_doc_id
+                    _self.checkpoint_doc_id.unwrap()
                 );
             }
         }
@@ -161,7 +161,7 @@ impl TermsImpacts {
         fs::rename(tmp_info_path, info_path).expect("Error when moving checkpoint.cbor in place");
 
         // And then set the last checkpoint
-        self.checkpoint_doc_id = doc_id;
+        self.checkpoint_doc_id = Some(doc_id);
     }
     /// Adds a term for a given document
     fn add_impact(
@@ -287,7 +287,7 @@ impl Indexer {
         }
     }
 
-    pub fn get_checkpoint_doc_id(&self) -> DocId {
+    pub fn get_checkpoint_doc_id(&self) -> Option<DocId> {
         self.impacts.checkpoint_doc_id
     }
 
@@ -315,7 +315,9 @@ impl Indexer {
 
         // Flush terms that have not been flushed for a long time (recovery)
         if (self.impacts.options.checkpoint_frequency > 0)
-            && (docid >= self.impacts.options.checkpoint_frequency + self.impacts.checkpoint_doc_id)
+            && (docid
+                >= self.impacts.options.checkpoint_frequency
+                    + self.impacts.checkpoint_doc_id.unwrap_or(0))
         {
             // Perform a checkpoint
             self.impacts.checkpoint(docid);
