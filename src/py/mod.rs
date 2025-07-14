@@ -253,11 +253,16 @@ unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'
 /// Each document is a sparse vector
 impl PyIndexBuilder {
     #[new]
-    fn new(folder: &str, options: &PyBuilderOptions) -> Self {
+    fn new(folder: &str, options: Option<&PyBuilderOptions>) -> Self {
+        let builder_options = match &options {
+            Some(_options) => &_options.0,
+            None => &BuilderOptions::default(),
+        };
+
         PyIndexBuilder {
             indexer: Arc::new(Mutex::new(SparseIndexer::new(
                 Path::new(folder),
-                &options.0,
+                builder_options,
             ))),
         }
     }
@@ -443,6 +448,7 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     pyo3_log::init();
     debug!("Loading xpmir-rust extension");
 
+    module.add_class::<PyBuilderOptions>()?;
     module.add_class::<PyIndexBuilder>()?;
     module.add_class::<PySparseIndex>()?;
 

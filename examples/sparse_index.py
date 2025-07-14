@@ -11,14 +11,15 @@ np.random.seed(10)
 # Sparse indexer
 with tempfile.TemporaryDirectory() as dir:
     print(f"Using directory {dir}")
-    indexer = impact_index.IndexBuilder(dir)
+    options = impact_index.BuilderOptions()
+    options.checkpoint_frequency = 600
+    indexer = impact_index.IndexBuilder(dir, options)
 
     for doc_id in range(NUM_DOCS):
         num_terms = np.random.randint(10, 50)
         terms = np.random.choice(range(NUM_TERMS), num_terms, replace=False).astype(np.uint64)
         impacts = np.abs(np.random.randn(num_terms)).astype(np.float32)
         indexer.add(doc_id, terms, impacts)
-
 
     index = indexer.build(True)
 
