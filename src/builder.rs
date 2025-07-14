@@ -342,6 +342,14 @@ impl Indexer {
 
             ciborium::ser::into_writer(&self.impacts.information, info_file)
                 .expect("Error while serializing");
+
+            // Remove old checkpoint
+            for s in ["checkpoint.cbor", "checkpoint.cbor.tmp"] {
+                let cpkt_path = self.folder.join(s);
+                if fs::exists(&cpkt_path).expect("error while checking if checkpoint exists") {
+                    fs::remove_file(&cpkt_path).expect("error while removing checkpoint file");
+                }
+            }
         } else {
             println!("Already built")
         }
