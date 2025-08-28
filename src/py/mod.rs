@@ -49,8 +49,8 @@ pub struct PyScoredDocument {
     docid: DocId,
 }
 
-#[pyclass]
-struct SparseSparseBuilderIndexIterator {
+#[pyclass(name = "SparseIndexIterator")]
+struct PySparseIndexIterator {
     // Use dead code to ensure we have a valid index when iterating
     #[allow(dead_code)]
     index: Arc<Box<dyn SparseIndex>>,
@@ -58,7 +58,7 @@ struct SparseSparseBuilderIndexIterator {
 }
 
 #[pymethods]
-impl SparseSparseBuilderIndexIterator {
+impl PySparseIndexIterator {
     fn __next__(&mut self) -> PyResult<Option<PyTermImpact>> {
         if let Some(r) = self.iter.next() {
             return Ok(Some(PyTermImpact {
@@ -71,6 +71,20 @@ impl SparseSparseBuilderIndexIterator {
 
     fn __iter__(slf: PyRef<Self>) -> PyRef<Self> {
         slf
+    }
+
+    fn length(&self) -> usize {
+        self.iter.length()
+    }
+
+    /// Returns the term maximum impact
+    fn max_value(&self) -> ImpactValue {
+        self.iter.max_value()
+    }
+
+    /// Returns the maximum document ID
+    fn max_doc_id(&self) -> DocId {
+        self.iter.max_doc_id()
     }
 }
 
@@ -140,13 +154,17 @@ impl PySparseIndex {
 
 #[pymethods]
 impl PySparseIndex {
-    fn postings(&self, term: TermIndex) -> PyResult<SparseSparseBuilderIndexIterator> {
-        Ok(SparseSparseBuilderIndexIterator {
+    fn postings(&self, term: TermIndex) -> PyResult<PySparseIndexIterator> {
+        Ok(PySparseIndexIterator {
             index: self.index.clone(),
             // TODO: ugly but works since index is up here
             // Could use ouroboros::self_referencing
             iter: unsafe { extend_lifetime(self.index.block_iterator(term)) },
         })
+    }
+
+    fn num_postings(&self) -> usize {
+        self.index.len()
     }
 
     /// Deprecated
@@ -456,6 +474,7 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     module.add_class::<PyBuilderOptions>()?;
     module.add_class::<PyIndexBuilder>()?;
     module.add_class::<PySparseIndex>()?;
+    module.add_class::<PySparseIndexIterator>()?;
 
     module.add_class::<PyEliasFanoCompressor>()?;
     module.add_class::<PyImpactQuantizer>()?;

@@ -39,7 +39,7 @@ pub struct BuilderOptions {
 
     // Maximum number of postings For a term, 16 * 1024 postings by
     // default, that is roughly 4Gb of max. memory in total
-    // with a vocabular of 32k tokens
+    // with a vocabulary of 32k tokens
     #[derivative(Default(value = "16384"))]
     pub in_memory_threshold: usize,
 }
@@ -119,6 +119,8 @@ impl TermsImpacts {
                     _self.checkpoint_doc_id,
                 ) = ciborium::de::from_reader(ckpt_file).expect("error while reading checkpoint");
 
+                // Note that we don't truncate the file since we will overwrite
+                // everything from there
                 _self
                     .postings_file
                     .seek(std::io::SeekFrom::Start(pos))
