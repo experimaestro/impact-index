@@ -19,6 +19,10 @@ use crate::compress::docid::EliasFanoCompressor;
 use crate::compress::CompressionTransform;
 use crate::transforms::split::SplitIndexTransform;
 
+use bmp::index::posting_list::PostingListIterator;
+use bmp::query::MAX_TERM_WEIGHT;
+use bmp::search::b_search_verbose;
+
 use crate::base::load_index;
 use crate::base::{DocId, ImpactValue, TermIndex};
 use crate::index::SparseIndex;
@@ -478,6 +482,85 @@ impl PySplitIndexTransform {
     }
 }
 
+/// BMP (Block-Max Pruning) Searcher for fast approximate search
+#[pyclass(name = "BmpSearcher")]
+pub struct PyBmpSearcher {
+    index: bmp::index::inverted_index::Index,
+    bfwd: bmp::index::forward_index::BlockForwardIndex,
+}
+
+#[pymethods]
+impl PyBmpSearcher {
+    /// Load a BMP index from a file
+    #[new]
+    fn new(path: &str) -> PyResult<Self> {
+        let path_buf = PathBuf::from_str(path).expect("Invalid path");
+        let (index, bfwd) = bmp::index::from_file(path_buf).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to load BMP index: {}", e))
+        })?;
+        Ok(PyBmpSearcher { index, bfwd })
+    }
+
+    /// Search the BMP index
+    ///
+    /// Args:
+    ///     query: Dictionary mapping term IDs (as strings) to weights
+    ///     k: Number of results to return
+    ///     alpha: BMP alpha parameter (default 1.0)
+    ///     beta: BMP beta parameter (default 1.0)
+    ///
+    /// Returns:
+    ///     Tuple of (doc_ids, scores) where doc_ids are strings and scores are floats
+    #[pyo3(signature = (query, k, alpha=1.0, beta=1.0))]
+    fn search(
+        &self,
+        query: HashMap<String, f32>,
+        k: usize,
+        alpha: f32,
+        beta: f32,
+    ) -> PyResult<(Vec<String>, Vec<f32>)> {
+        // Find max weight for normalization
+        let max_tok_weight = query
+            .iter()
+            .map(|p| *p.1)
+            .filter(|&value| !value.is_nan())
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap_or(1.0);
+
+        // Quantize query weights
+        let mut quant_query: HashMap<String, u32> = HashMap::new();
+        let scale: f32 = MAX_TERM_WEIGHT as f32 / max_tok_weight;
+        for (key, value) in &query {
+            quant_query.insert(key.clone(), (value * scale).ceil() as u32);
+        }
+
+        // Build cursors
+        let cursors: Vec<PostingListIterator> = quant_query
+            .iter()
+            .flat_map(|(token, freq)| self.index.get_cursor(token, *freq))
+            .collect();
+        let wrapped_cursors = vec![cursors; 1];
+
+        // Search
+        let mut results = b_search_verbose(wrapped_cursors, &self.bfwd, k, alpha, beta, false);
+
+        // Extract results
+        let doc_lexicon = self.index.documents();
+        let mut docnos: Vec<String> = Vec::new();
+        let mut scores: Vec<f32> = Vec::new();
+        for r in results[0].to_sorted_vec().iter() {
+            docnos.push(doc_lexicon[r.doc_id.0 as usize].clone());
+            scores.push(r.score.into());
+        }
+        Ok((docnos, scores))
+    }
+
+    /// Get the number of documents in the index
+    fn num_documents(&self) -> usize {
+        self.index.num_documents()
+    }
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
@@ -495,6 +578,7 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     module.add_class::<PyGlobalQuantizerFactory>()?;
     module.add_class::<PyCompressionTransform>()?;
     module.add_class::<PySplitIndexTransform>()?;
+    module.add_class::<PyBmpSearcher>()?;
 
     Ok(())
 }
