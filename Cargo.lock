@@ -576,6 +576,7 @@ dependencies = [
  "criterion",
  "derivative",
  "env_logger",
+ "fst",
  "helpers",
  "indicatif",
  "intertrait",

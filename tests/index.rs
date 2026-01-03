@@ -270,3 +270,125 @@ fn test_search(
 
     vec_compare(&observed, &expected);
 }
+
+/// Test that compares the output of legacy and streaming BMP conversion.
+///
+/// The two methods should produce byte-identical output files.
+#[test]
+fn test_bmp_conversion_comparison() {
+    use std::fs;
+
+    init_logger();
+
+    // Create a test index
+    let mut data = TestIndex::new(
+        50,       // vocabulary_size
+        200,      // document_count
+        5.,       // lambda_words
+        10,       // max_words
+        Some(42), // seed for reproducibility
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
+
+    let index = data.indexer.to_index(true);
+
+    // Create temp files for both outputs
+    let legacy_path = data.dir.path().join("legacy.bmp");
+    let streaming_path = data.dir.path().join("streaming.bmp");
+
+    // Convert using legacy method
+    index
+        .convert_to_bmp(&legacy_path, 32, false)
+        .expect("Legacy conversion failed");
+
+    // Convert using streaming method
+    index
+        .convert_to_bmp_streaming(&streaming_path, 32, false)
+        .expect("Streaming conversion failed");
+
+    // Read both files and compare
+    let legacy_bytes = fs::read(&legacy_path).expect("Failed to read legacy file");
+    let streaming_bytes = fs::read(&streaming_path).expect("Failed to read streaming file");
+
+    // Compare file sizes
+    assert_eq!(
+        legacy_bytes.len(),
+        streaming_bytes.len(),
+        "File sizes differ: legacy={}, streaming={}",
+        legacy_bytes.len(),
+        streaming_bytes.len()
+    );
+
+    // Compare contents byte by byte
+    let mut diff_count = 0;
+    let mut first_diff = None;
+    for (i, (a, b)) in legacy_bytes.iter().zip(streaming_bytes.iter()).enumerate() {
+        if a != b {
+            diff_count += 1;
+            if first_diff.is_none() {
+                first_diff = Some(i);
+            }
+        }
+    }
+
+    if diff_count > 0 {
+        eprintln!(
+            "Files differ: {} bytes differ, first difference at offset {}",
+            diff_count,
+            first_diff.unwrap()
+        );
+
+        // For debugging: show the region around the first difference
+        if let Some(offset) = first_diff {
+            let start = offset.saturating_sub(16);
+            let end = (offset + 16).min(legacy_bytes.len());
+            eprintln!("Legacy   @ {}: {:?}", start, &legacy_bytes[start..end]);
+            eprintln!("Streaming @ {}: {:?}", start, &streaming_bytes[start..end]);
+        }
+    }
+
+    assert_eq!(
+        diff_count, 0,
+        "Files should be byte-identical, but {} bytes differ",
+        diff_count
+    );
+}
+
+/// Test streaming BMP conversion with compression enabled.
+#[test]
+fn test_bmp_streaming_with_compression() {
+    use std::fs;
+
+    init_logger();
+
+    let mut data = TestIndex::new(
+        30,
+        100,
+        3.,
+        8,
+        Some(123),
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
+
+    let index = data.indexer.to_index(true);
+    let output_path = data.dir.path().join("compressed.bmp");
+
+    // Convert with compression enabled
+    index
+        .convert_to_bmp_streaming(&output_path, 64, true)
+        .expect("Streaming conversion with compression failed");
+
+    // Verify the file was created and has content
+    let metadata = fs::metadata(&output_path).expect("Failed to get file metadata");
+    assert!(metadata.len() > 0, "Output file should not be empty");
+
+    eprintln!("Compressed BMP file size: {} bytes", metadata.len());
+}

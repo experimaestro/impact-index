@@ -204,13 +204,27 @@ impl PySparseIndex {
         })
     }
 
-    /// Convert into a BMP index
-    fn to_bmp<'a>(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
+    /// Convert into a BMP index (legacy method)
+    fn to_bmp(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
         let index = self.index.clone();
         let output_path = PathBuf::from_str(output).expect("cannot use path");
         index
             .convert_to_bmp(&output_path, bsize, compress_range)
-            .expect("Failed to write the CIFF file");
+            .expect("Failed to write the BMP file");
+
+        Ok(())
+    }
+
+    /// Convert into a BMP index using streaming (memory-efficient) method
+    ///
+    /// This uses O(num_terms * num_blocks) memory instead of O(total_postings),
+    /// making it suitable for large indices that don't fit in memory.
+    fn to_bmp_streaming(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
+        let index = self.index.clone();
+        let output_path = PathBuf::from_str(output).expect("cannot use path");
+        index
+            .convert_to_bmp_streaming(&output_path, bsize, compress_range)
+            .expect("Failed to write the BMP file");
 
         Ok(())
     }

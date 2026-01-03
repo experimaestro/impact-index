@@ -272,6 +272,25 @@ pub trait SparseIndex: Send + Sync + SparseIndexView + AsSparseIndexView {
         Ok(())
     }
 
+    /// Convert to BMP file format using streaming (memory-efficient) builders.
+    ///
+    /// This is an alternative to `convert_to_bmp` that uses O(num_terms * num_blocks)
+    /// memory instead of O(total_postings) memory. It performs two passes over the
+    /// index but avoids storing raw postings in memory.
+    ///
+    /// # Arguments
+    /// * `output` - Output path for the BMP index file
+    /// * `bsize` - Block size for BMP partitioning
+    /// * `compress_range` - Whether to compress block max scores
+    fn convert_to_bmp_streaming(
+        &self,
+        output: &Path,
+        bsize: usize,
+        compress_range: bool,
+    ) -> Result<()> {
+        crate::bmp::convert_to_bmp_streaming(self.as_view(), output, bsize, compress_range)
+    }
+
     fn to_ciff(&self, writer: &mut dyn Write, quantization: u128) {
         let mut output = CodedOutputStream::new(writer);
         let index_view = self.as_view();

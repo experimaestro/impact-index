@@ -17,7 +17,7 @@ use crate::{
     index::SparseIndexInformation,
     utils::buffer::{Buffer, MemoryBuffer, MmapBuffer, Slice},
 };
-use indicatif::{ProgressIterator, ProgressStyle};
+use indicatif::ProgressIterator;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
