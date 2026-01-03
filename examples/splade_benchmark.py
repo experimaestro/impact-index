@@ -188,7 +188,7 @@ def build_impact_index_streaming(
     # Check if index already exists
     if done_file.exists() and doc_ids_file.exists():
         print("  Index already built, loading from disk...")
-        index = impact_index.Index(str(index_dir), in_memory=True)
+        index = impact_index.Index.load(str(index_dir), in_memory=True)
         with open(doc_ids_file, "r") as f:
             doc_ids = json.load(f)
         print(f"  Index size: {get_file_size_mb(index_dir):.2f} MB")
@@ -324,16 +324,20 @@ def search_impact_index(
     index: impact_index.Index,
     query_encodings: List[Dict[int, float]],
     top_k: int = 100,
+    method: str = "wand",
 ) -> Tuple[List[List[Tuple[int, float]]], float, float]:
-    """Search using impact-index."""
+    """Search using impact-index with WAND or MaxScore algorithm."""
     results = []
 
     start_time = time.time()
     start_cpu = time.process_time()
 
-    for sparse_vec in tqdm(query_encodings, desc="Searching (impact-index)"):
+    search_fn = index.search_wand if method == "wand" else index.search_maxscore
+    desc = f"Searching ({method.upper()})"
+
+    for sparse_vec in tqdm(query_encodings, desc=desc, unit="query"):
         if sparse_vec:
-            hits = index.search_wand(sparse_vec, top_k)
+            hits = search_fn(sparse_vec, top_k)
             results.append([(h.docid, h.score) for h in hits])
         else:
             results.append([])
@@ -519,28 +523,41 @@ def main():
                 impact_idx, bmp_legacy_path, bsize=args.bsize, use_streaming=False
             )
 
-        # Search with impact-index
-        print("\n=== Searching with Impact Index ===")
-        impact_results, impact_wall, impact_cpu = search_impact_index(
-            impact_idx, query_encodings, top_k=args.top_k
+        # Search with WAND
+        print("\n=== Searching with WAND ===")
+        wand_results, wand_wall, wand_cpu = search_impact_index(
+            impact_idx, query_encodings, top_k=args.top_k, method="wand"
         )
-        print(f"  Wall time: {impact_wall:.2f}s ({len(queries)/impact_wall:.1f} q/s)")
-        print(f"  CPU time: {impact_cpu:.2f}s")
+        print(f"  Wall time: {wand_wall:.2f}s ({len(queries)/wand_wall:.1f} q/s)")
+        print(f"  CPU time: {wand_cpu:.2f}s")
+
+        # Search with MaxScore
+        print("\n=== Searching with MaxScore ===")
+        maxscore_results, maxscore_wall, maxscore_cpu = search_impact_index(
+            impact_idx, query_encodings, top_k=args.top_k, method="maxscore"
+        )
+        print(f"  Wall time: {maxscore_wall:.2f}s ({len(queries)/maxscore_wall:.1f} q/s)")
+        print(f"  CPU time: {maxscore_cpu:.2f}s")
 
         # Search with BMP
-        print("\n=== Searching with BMP Index ===")
+        print("\n=== Searching with BMP ===")
         bmp_results, bmp_wall, bmp_cpu = search_bmp_index(bmp_searcher, query_encodings, top_k=args.top_k)
         print(f"  Wall time: {bmp_wall:.2f}s ({len(queries)/bmp_wall:.1f} q/s)")
         print(f"  CPU time: {bmp_cpu:.2f}s")
 
         # Compute metrics
         print("\n=== IR Metrics ===")
-        print("\nImpact Index:")
-        impact_metrics = compute_metrics(impact_results, query_ids, qrels, doc_ids)
-        for metric, value in sorted(impact_metrics.items()):
+        print("\nWAND:")
+        wand_metrics = compute_metrics(wand_results, query_ids, qrels, doc_ids)
+        for metric, value in sorted(wand_metrics.items()):
             print(f"  {metric}: {value:.4f}")
 
-        print("\nBMP Index:")
+        print("\nMaxScore:")
+        maxscore_metrics = compute_metrics(maxscore_results, query_ids, qrels, doc_ids)
+        for metric, value in sorted(maxscore_metrics.items()):
+            print(f"  {metric}: {value:.4f}")
+
+        print("\nBMP:")
         bmp_metrics = compute_metrics(bmp_results, query_ids, qrels, doc_ids)
         for metric, value in sorted(bmp_metrics.items()):
             print(f"  {metric}: {value:.4f}")
@@ -555,22 +572,22 @@ def main():
         print(f"Model: {args.model}")
 
         print("\nIndex Sizes:")
-        print(f"  Impact Index: {get_file_size_mb(index_dir):.2f} MB")
+        print(f"  Standard Index: {get_file_size_mb(index_dir):.2f} MB")
         print(f"  BMP Index: {get_file_size_mb(bmp_path):.2f} MB")
 
         print("\nSearch Performance:")
-        print(f"  Impact Index: {impact_wall:.2f}s wall, {impact_cpu:.2f}s CPU")
-        print(f"  BMP Index: {bmp_wall:.2f}s wall, {bmp_cpu:.2f}s CPU")
-        print(f"  Speedup (wall): {impact_wall/bmp_wall:.2f}x")
+        print(f"  WAND:     {wand_wall:.2f}s wall, {wand_cpu:.2f}s CPU ({len(queries)/wand_wall:.1f} q/s)")
+        print(f"  MaxScore: {maxscore_wall:.2f}s wall, {maxscore_cpu:.2f}s CPU ({len(queries)/maxscore_wall:.1f} q/s)")
+        print(f"  BMP:      {bmp_wall:.2f}s wall, {bmp_cpu:.2f}s CPU ({len(queries)/bmp_wall:.1f} q/s)")
 
         print("\nKey Metrics:")
         for k in [10, 100]:
-            if f"MRR@{k}" in impact_metrics:
-                print(f"  MRR@{k}: Impact={impact_metrics[f'MRR@{k}']:.4f}, BMP={bmp_metrics[f'MRR@{k}']:.4f}")
-            if f"Recall@{k}" in impact_metrics:
-                print(
-                    f"  Recall@{k}: Impact={impact_metrics[f'Recall@{k}']:.4f}, BMP={bmp_metrics[f'Recall@{k}']:.4f}"
-                )
+            if f"MRR@{k}" in wand_metrics:
+                print(f"  MRR@{k}:    WAND={wand_metrics[f'MRR@{k}']:.4f}, MaxScore={maxscore_metrics[f'MRR@{k}']:.4f}, BMP={bmp_metrics[f'MRR@{k}']:.4f}")
+            if f"NDCG@{k}" in wand_metrics:
+                print(f"  NDCG@{k}:   WAND={wand_metrics[f'NDCG@{k}']:.4f}, MaxScore={maxscore_metrics[f'NDCG@{k}']:.4f}, BMP={bmp_metrics[f'NDCG@{k}']:.4f}")
+            if f"Recall@{k}" in wand_metrics:
+                print(f"  Recall@{k}: WAND={wand_metrics[f'Recall@{k}']:.4f}, MaxScore={maxscore_metrics[f'Recall@{k}']:.4f}, BMP={bmp_metrics[f'Recall@{k}']:.4f}")
 
         # Save results to JSON
         results_path = output_dir / "benchmark_results.json"
@@ -581,16 +598,18 @@ def main():
                 "num_queries": len(queries),
             },
             "index_sizes_mb": {
-                "impact_index": get_file_size_mb(index_dir),
+                "standard_index": get_file_size_mb(index_dir),
                 "bmp_index": get_file_size_mb(bmp_path),
             },
             "search_time_seconds": {
-                "impact_index": {"wall": impact_wall, "cpu": impact_cpu},
-                "bmp_index": {"wall": bmp_wall, "cpu": bmp_cpu},
+                "wand": {"wall": wand_wall, "cpu": wand_cpu},
+                "maxscore": {"wall": maxscore_wall, "cpu": maxscore_cpu},
+                "bmp": {"wall": bmp_wall, "cpu": bmp_cpu},
             },
             "metrics": {
-                "impact_index": impact_metrics,
-                "bmp_index": bmp_metrics,
+                "wand": wand_metrics,
+                "maxscore": maxscore_metrics,
+                "bmp": bmp_metrics,
             },
         }
         with open(results_path, "w") as f:
