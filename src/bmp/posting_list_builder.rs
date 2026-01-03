@@ -140,6 +140,8 @@ impl StreamingPostingListManager {
 
     /// Builds all posting lists.
     pub fn build(self, compress_range: bool) -> Vec<PostingList> {
+        let num_blocks = (self.num_documents + self.bsize - 1) / self.bsize;
+
         self.builders
             .into_iter()
             .map(|opt_builder| {
@@ -147,7 +149,19 @@ impl StreamingPostingListManager {
                     .map(|b| b.build(compress_range))
                     .unwrap_or_else(|| {
                         // Empty posting list for terms with no postings
-                        PostingList::new(BlockData::Raw(Vec::new()), vec![0, 0, 0])
+                        // Must have same block structure as non-empty terms for consistency
+                        let block_data = if compress_range {
+                            // Compressed: empty blocks (all zeros = no non-zero entries)
+                            let compressed: Vec<CompressedBlock> = (0..((num_blocks + 255) / 256))
+                                .map(|_| CompressedBlock {
+                                    max_scores: Vec::new(),
+                                })
+                                .collect();
+                            BlockData::Compressed(compressed)
+                        } else {
+                            BlockData::Raw(vec![0u8; num_blocks])
+                        };
+                        PostingList::new(block_data, vec![0, 0, 0])
                     })
             })
             .collect()

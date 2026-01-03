@@ -392,3 +392,131 @@ fn test_bmp_streaming_with_compression() {
 
     eprintln!("Compressed BMP file size: {} bytes", metadata.len());
 }
+
+/// Stress test comparing legacy and streaming BMP conversion with various parameters.
+///
+/// Tests different block sizes, document counts, and posting densities to ensure
+/// streaming and legacy methods produce identical output across edge cases.
+#[rstest]
+// Small block size (8) - many blocks per term
+#[case(100, 500, 10., 20, 8, false, Some(1))]
+#[case(100, 500, 10., 20, 8, true, Some(2))]
+// Very small block size (4) - stress test block boundaries
+#[case(50, 200, 8., 15, 4, false, Some(3))]
+#[case(50, 200, 8., 15, 4, true, Some(4))]
+// Large number of documents spanning many blocks
+#[case(200, 2000, 15., 30, 16, false, Some(5))]
+#[case(200, 2000, 15., 30, 16, true, Some(6))]
+// Dense postings (high lambda) - more postings per document
+#[case(100, 500, 50., 100, 32, false, Some(7))]
+#[case(100, 500, 50., 100, 32, true, Some(8))]
+// Sparse postings with small blocks
+#[case(500, 1000, 3., 5, 8, false, Some(9))]
+// Large vocabulary with moderate documents
+#[case(1000, 500, 5., 10, 16, false, Some(10))]
+// Edge case: documents exactly filling blocks
+#[case(50, 128, 10., 20, 32, false, Some(11))]
+#[case(50, 256, 10., 20, 64, false, Some(12))]
+// High posting density with tiny blocks
+#[case(30, 100, 20., 30, 4, false, Some(13))]
+#[case(30, 100, 20., 30, 4, true, Some(14))]
+fn test_bmp_conversion_stress(
+    #[case] vocabulary_size: usize,
+    #[case] document_count: DocId,
+    #[case] lambda_words: f32,
+    #[case] max_words: usize,
+    #[case] bsize: usize,
+    #[case] compress_range: bool,
+    #[case] seed: Option<u64>,
+) {
+    use std::fs;
+
+    init_logger();
+
+    eprintln!(
+        "Testing: vocab={}, docs={}, lambda={}, max_words={}, bsize={}, compress={}",
+        vocabulary_size, document_count, lambda_words, max_words, bsize, compress_range
+    );
+
+    let mut data = TestIndex::new(
+        vocabulary_size,
+        document_count,
+        lambda_words,
+        max_words,
+        seed,
+        BuilderOptions {
+            checkpoint_frequency: 0,
+            in_memory_threshold: 10,
+        },
+        &HashSet::<DocId>::from([]),
+    );
+
+    let index = data.indexer.to_index(true);
+
+    // Create temp files for both outputs
+    let legacy_path = data.dir.path().join("legacy.bmp");
+    let streaming_path = data.dir.path().join("streaming.bmp");
+
+    // Convert using legacy method
+    index
+        .convert_to_bmp(&legacy_path, bsize, compress_range)
+        .expect("Legacy conversion failed");
+
+    // Convert using streaming method
+    index
+        .convert_to_bmp_streaming(&streaming_path, bsize, compress_range)
+        .expect("Streaming conversion failed");
+
+    // Read both files and compare
+    let legacy_bytes = fs::read(&legacy_path).expect("Failed to read legacy file");
+    let streaming_bytes = fs::read(&streaming_path).expect("Failed to read streaming file");
+
+    eprintln!(
+        "File sizes: legacy={} bytes, streaming={} bytes",
+        legacy_bytes.len(),
+        streaming_bytes.len()
+    );
+
+    // Compare file sizes
+    assert_eq!(
+        legacy_bytes.len(),
+        streaming_bytes.len(),
+        "File sizes differ: legacy={}, streaming={}",
+        legacy_bytes.len(),
+        streaming_bytes.len()
+    );
+
+    // Compare contents byte by byte
+    let mut diff_count = 0;
+    let mut first_diff = None;
+    for (i, (a, b)) in legacy_bytes.iter().zip(streaming_bytes.iter()).enumerate() {
+        if a != b {
+            diff_count += 1;
+            if first_diff.is_none() {
+                first_diff = Some(i);
+            }
+        }
+    }
+
+    if diff_count > 0 {
+        eprintln!(
+            "Files differ: {} bytes differ, first difference at offset {}",
+            diff_count,
+            first_diff.unwrap()
+        );
+
+        // For debugging: show the region around the first difference
+        if let Some(offset) = first_diff {
+            let start = offset.saturating_sub(16);
+            let end = (offset + 16).min(legacy_bytes.len());
+            eprintln!("Legacy    @ {}: {:?}", start, &legacy_bytes[start..end]);
+            eprintln!("Streaming @ {}: {:?}", start, &streaming_bytes[start..end]);
+        }
+    }
+
+    assert_eq!(
+        diff_count, 0,
+        "Files should be byte-identical, but {} bytes differ",
+        diff_count
+    );
+}
