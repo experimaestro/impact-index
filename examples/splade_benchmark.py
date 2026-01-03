@@ -82,6 +82,15 @@ class SpladeEncoder:
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForMaskedLM.from_pretrained(model_name)
+
+        # Check for multi-GPU setup
+        self.multi_gpu = False
+        if self.device == "cuda" and torch.cuda.device_count() > 1:
+            num_gpus = torch.cuda.device_count()
+            print(f"  Using DataParallel with {num_gpus} GPUs")
+            self.model = torch.nn.DataParallel(self.model)
+            self.multi_gpu = True
+
         self.model.to(self.device)
         self.model.eval()
 
@@ -199,6 +208,12 @@ def build_impact_index_streaming(
     options.checkpoint_frequency = 10000
     indexer = impact_index.IndexBuilder(str(index_dir), options)
 
+    # Check for checkpoint to resume from
+    checkpoint_doc_id = indexer.get_checkpoint_doc_id()
+    resume_from = checkpoint_doc_id + 1 if checkpoint_doc_id is not None else 0
+    if resume_from > 0:
+        print(f"  Resuming from checkpoint at doc {resume_from}")
+
     start_time = time.time()
     start_cpu = time.process_time()
 
@@ -206,7 +221,7 @@ def build_impact_index_streaming(
     doc_ids = []
     batch_texts = []
     batch_doc_ids = []
-    indexed_count = 0
+    current_doc_idx = 0  # Actual doc index in the dataset
 
     # Get total document count from ir_datasets if available
     total_docs = None
@@ -218,42 +233,48 @@ def build_impact_index_streaming(
         total_docs = max_docs
 
     print("  Streaming documents...")
-    with tqdm(total=total_docs, desc="Indexing", unit="doc") as pbar:
+    with tqdm(total=total_docs, desc="Indexing", unit="doc", initial=resume_from) as pbar:
         for doc in dataset.docs_iter():
-            if max_docs > 0 and indexed_count >= max_docs:
+            if max_docs > 0 and current_doc_idx >= max_docs:
                 break
+
+            doc_id = doc.doc_id
+            doc_ids.append(doc_id)
+
+            # Skip encoding for documents before resume point (but still collect doc_ids)
+            if current_doc_idx < resume_from:
+                current_doc_idx += 1
+                continue
 
             doc_text = doc.text if hasattr(doc, "text") else doc.body
             batch_texts.append(doc_text)
-            batch_doc_ids.append(doc.doc_id)
+            batch_doc_ids.append(doc_id)
 
             # Process batch when full
             if len(batch_texts) >= batch_size:
                 encodings = encoder.encode(batch_texts)
                 for j, sparse_vec in enumerate(encodings):
-                    doc_idx = indexed_count + j
+                    doc_idx = current_doc_idx - len(batch_texts) + 1 + j
                     if sparse_vec:
                         terms = np.array(list(sparse_vec.keys()), dtype=np.uint64)
                         values = np.array(list(sparse_vec.values()), dtype=np.float32)
                         indexer.add(doc_idx, terms, values)
-                doc_ids.extend(batch_doc_ids)
                 pbar.update(len(batch_texts))
-                indexed_count += len(batch_texts)
                 batch_texts = []
                 batch_doc_ids = []
+
+            current_doc_idx += 1
 
         # Process remaining documents in the last batch
         if batch_texts:
             encodings = encoder.encode(batch_texts)
             for j, sparse_vec in enumerate(encodings):
-                doc_idx = indexed_count + j
+                doc_idx = current_doc_idx - len(batch_texts) + j
                 if sparse_vec:
                     terms = np.array(list(sparse_vec.keys()), dtype=np.uint64)
                     values = np.array(list(sparse_vec.values()), dtype=np.float32)
                     indexer.add(doc_idx, terms, values)
-            doc_ids.extend(batch_doc_ids)
             pbar.update(len(batch_texts))
-            indexed_count += len(batch_texts)
 
     # Build the index
     index = indexer.build(in_memory=True)
@@ -462,7 +483,7 @@ def main():
     )
     parser.add_argument("--max-docs", type=int, default=0, help="Maximum number of documents to index (0 = all)")
     parser.add_argument("--max-queries", type=int, default=0, help="Maximum number of queries to evaluate (0 = all)")
-    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for encoding")
+    parser.add_argument("--batch-size", type=int, default=256, help="Batch size for encoding")
     parser.add_argument("--top-k", type=int, default=100, help="Number of results to retrieve")
     parser.add_argument("--bsize", type=int, default=64, help="BMP block size")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory (default: temp)")
