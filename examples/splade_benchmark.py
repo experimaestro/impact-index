@@ -83,49 +83,55 @@ class SpladeEncoder:
         print(f"Loading SPLADE model '{model_name}' on {self.device}...")
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForMaskedLM.from_pretrained(model_name)
 
         # Check for multi-GPU setup (only if explicitly enabled)
         self.multi_gpu = False
+        self.models = []  # List of (model, device) for multi-GPU
+
         if multi_gpu and self.device == "cuda" and torch.cuda.device_count() > 1:
             num_gpus = torch.cuda.device_count()
-            print(f"  Using DataParallel with {num_gpus} GPUs")
-            self.model = torch.nn.DataParallel(self.model)
+            print(f"  Loading model on {num_gpus} GPUs for parallel inference...")
+            # Load a separate model copy on each GPU for true parallelism
+            for gpu_id in range(num_gpus):
+                device = f"cuda:{gpu_id}"
+                model = AutoModelForMaskedLM.from_pretrained(model_name)
+                model.to(device)
+                model.eval()
+                self.models.append((model, device))
+                print(f"    GPU {gpu_id}: {torch.cuda.get_device_name(gpu_id)}")
             self.multi_gpu = True
-        elif self.device == "cuda":
-            print(f"  Using single GPU (CUDA device 0)")
-
-        self.model.to(self.device)
-        self.model.eval()
+            self.model = self.models[0][0]  # Keep reference for compatibility
+        else:
+            self.model = AutoModelForMaskedLM.from_pretrained(model_name)
+            if self.device == "cuda":
+                print(f"  Using single GPU (CUDA device 0)")
+            self.model.to(self.device)
+            self.model.eval()
 
         # Get vocabulary for term mapping
         self.vocab = self.tokenizer.get_vocab()
         self.id2token = {v: k for k, v in self.vocab.items()}
 
-    @torch.no_grad()
-    def encode(self, texts: List[str], max_length: int = 256) -> List[Dict[int, float]]:
-        """
-        Encode texts into sparse SPLADE representations.
-
-        Returns list of dicts mapping term_id -> weight.
-        """
+    def _encode_on_device(self, texts: List[str], model, device: str, max_length: int = 256) -> List[Dict[int, float]]:
+        """Encode texts on a specific device."""
         inputs = self.tokenizer(
             texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=max_length,
-        ).to(self.device)
+        ).to(device)
 
-        outputs = self.model(**inputs)
-        logits = outputs.logits
+        with torch.no_grad():
+            outputs = model(**inputs)
+            logits = outputs.logits
 
-        # SPLADE aggregation: max over sequence, then ReLU + log1p
-        # Shape: (batch, seq_len, vocab_size) -> (batch, vocab_size)
-        weights = torch.max(
-            torch.log1p(torch.relu(logits)) * inputs["attention_mask"].unsqueeze(-1),
-            dim=1,
-        ).values
+            # SPLADE aggregation: max over sequence, then ReLU + log1p
+            # Shape: (batch, seq_len, vocab_size) -> (batch, vocab_size)
+            weights = torch.max(
+                torch.log1p(torch.relu(logits)) * inputs["attention_mask"].unsqueeze(-1),
+                dim=1,
+            ).values
 
         results = []
         for i in range(weights.shape[0]):
@@ -140,14 +146,58 @@ class SpladeEncoder:
 
         return results
 
+    @torch.no_grad()
+    def encode(self, texts: List[str], max_length: int = 256) -> List[Dict[int, float]]:
+        """
+        Encode texts into sparse SPLADE representations.
+
+        Returns list of dicts mapping term_id -> weight.
+        """
+        if not self.multi_gpu:
+            return self._encode_on_device(texts, self.model, self.device, max_length)
+
+        # Multi-GPU: distribute texts across GPUs using threads
+        import concurrent.futures
+
+        num_gpus = len(self.models)
+        chunk_size = (len(texts) + num_gpus - 1) // num_gpus
+        chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+
+        results = [None] * len(chunks)
+
+        def encode_chunk(idx, chunk, model, device):
+            if not chunk:
+                return idx, []
+            return idx, self._encode_on_device(chunk, model, device, max_length)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_gpus) as executor:
+            futures = []
+            for i, chunk in enumerate(chunks):
+                if i < len(self.models):
+                    model, device = self.models[i]
+                    futures.append(executor.submit(encode_chunk, i, chunk, model, device))
+
+            for future in concurrent.futures.as_completed(futures):
+                idx, chunk_results = future.result()
+                results[idx] = chunk_results
+
+        # Flatten results maintaining order
+        return [item for sublist in results if sublist for item in sublist]
+
     def encode_batch(
         self, texts: List[str], batch_size: int = 32, max_length: int = 256, desc: str = "Encoding", unit: str = "item"
     ) -> List[Dict[int, float]]:
-        """Encode texts in batches with progress bar (shows individual items, not batches)."""
+        """Encode texts in batches with progress bar (shows individual items, not batches).
+
+        In multi-GPU mode, batch_size is per GPU, so total batch = batch_size * num_gpus.
+        """
+        # In multi-GPU mode, batch_size is per GPU
+        effective_batch_size = batch_size * len(self.models) if self.multi_gpu else batch_size
+
         results = []
         with tqdm(total=len(texts), desc=desc, unit=unit) as pbar:
-            for i in range(0, len(texts), batch_size):
-                batch = texts[i : i + batch_size]
+            for i in range(0, len(texts), effective_batch_size):
+                batch = texts[i : i + effective_batch_size]
                 batch_results = self.encode(batch, max_length)
                 results.extend(batch_results)
                 pbar.update(len(batch))
