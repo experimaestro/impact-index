@@ -30,6 +30,8 @@ Or with pip-installed dependencies:
 
 import argparse
 import json
+import logging
+import os
 import resource
 import tempfile
 import time
@@ -76,20 +78,22 @@ def get_file_size_mb(path: Path) -> float:
 class SpladeEncoder:
     """SPLADE sparse encoder using HuggingFace transformers."""
 
-    def __init__(self, model_name: str = "naver/splade-cocondenser-ensembledistil", device: str = None):
+    def __init__(self, model_name: str = "naver/splade-cocondenser-ensembledistil", device: str = None, multi_gpu: bool = False):
         self.device = device or get_best_device()
         print(f"Loading SPLADE model '{model_name}' on {self.device}...")
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForMaskedLM.from_pretrained(model_name)
 
-        # Check for multi-GPU setup
+        # Check for multi-GPU setup (only if explicitly enabled)
         self.multi_gpu = False
-        if self.device == "cuda" and torch.cuda.device_count() > 1:
+        if multi_gpu and self.device == "cuda" and torch.cuda.device_count() > 1:
             num_gpus = torch.cuda.device_count()
             print(f"  Using DataParallel with {num_gpus} GPUs")
             self.model = torch.nn.DataParallel(self.model)
             self.multi_gpu = True
+        elif self.device == "cuda":
+            print(f"  Using single GPU (CUDA device 0)")
 
         self.model.to(self.device)
         self.model.eval()
@@ -187,6 +191,7 @@ def build_impact_index_streaming(
     index_dir: Path,
     batch_size: int = 32,
     max_docs: int = None,
+    checkpoint_frequency: int = 0,
 ) -> Tuple[impact_index.Index, List[str]]:
     """Build impact-index from documents using streaming (no full doc list in memory)."""
     print("\n=== Building Impact Index (Streaming) ===")
@@ -205,7 +210,8 @@ def build_impact_index_streaming(
         return index, doc_ids
 
     options = impact_index.BuilderOptions()
-    options.checkpoint_frequency = 10000
+    if checkpoint_frequency > 0:
+        options.checkpoint_frequency = checkpoint_frequency
     indexer = impact_index.IndexBuilder(str(index_dir), options)
 
     # Check for checkpoint to resume from
@@ -492,7 +498,33 @@ def main():
         action="store_true",
         help="Compare legacy vs streaming BMP conversion",
     )
+    parser.add_argument(
+        "--multi-gpu",
+        action="store_true",
+        help="Use DataParallel for multi-GPU encoding (experimental)",
+    )
+    parser.add_argument(
+        "--checkpoint-frequency",
+        type=int,
+        default=0,
+        help="Checkpoint frequency for indexing (0 = no checkpointing)",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=str,
+        default="warn",
+        choices=["error", "warn", "info", "debug", "trace"],
+        help="Rust log level (default: warn)",
+    )
     args = parser.parse_args()
+
+    # Setup Rust logging via RUST_LOG environment variable
+    os.environ["RUST_LOG"] = args.log_level
+    # Initialize Python logging as well
+    logging.basicConfig(
+        level=getattr(logging, args.log_level.upper() if args.log_level != "trace" else "DEBUG"),
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
 
     # Setup output directory
     if args.output_dir:
@@ -506,7 +538,7 @@ def main():
 
     try:
         # Initialize encoder first (needed for both queries and documents)
-        encoder = SpladeEncoder(args.model)
+        encoder = SpladeEncoder(args.model, multi_gpu=args.multi_gpu)
 
         # Load dataset for streaming
         import ir_datasets
@@ -518,7 +550,8 @@ def main():
         index_dir = output_dir / "impact_index"
         index_dir.mkdir(exist_ok=True)
         impact_idx, doc_ids = build_impact_index_streaming(
-            encoder, dataset, index_dir, batch_size=args.batch_size, max_docs=args.max_docs
+            encoder, dataset, index_dir, batch_size=args.batch_size, max_docs=args.max_docs,
+            checkpoint_frequency=args.checkpoint_frequency
         )
 
         # Load queries and qrels (small, kept in memory)
