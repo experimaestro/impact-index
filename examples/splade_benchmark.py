@@ -82,7 +82,7 @@ class SpladeEncoder:
         self.device = device or get_best_device()
         print(f"Loading SPLADE model '{model_name}' on {self.device}...")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
 
         # Check for multi-GPU setup (only if explicitly enabled)
         self.multi_gpu = False
@@ -112,15 +112,10 @@ class SpladeEncoder:
         self.vocab = self.tokenizer.get_vocab()
         self.id2token = {v: k for k, v in self.vocab.items()}
 
-    def _encode_on_device(self, texts: List[str], model, device: str, max_length: int = 256) -> List[Dict[int, float]]:
-        """Encode texts on a specific device."""
-        inputs = self.tokenizer(
-            texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_length,
-        ).to(device)
+    def _run_model_on_device(self, inputs_chunk: dict, model, device: str) -> List[Dict[int, float]]:
+        """Run model inference on pre-tokenized inputs on a specific device."""
+        # Move inputs to device
+        inputs = {k: v.to(device) for k, v in inputs_chunk.items()}
 
         with torch.no_grad():
             outputs = model(**inputs)
@@ -153,29 +148,48 @@ class SpladeEncoder:
 
         Returns list of dicts mapping term_id -> weight.
         """
-        if not self.multi_gpu:
-            return self._encode_on_device(texts, self.model, self.device, max_length)
+        # Tokenize all texts upfront on CPU (avoids GIL contention in threads)
+        inputs = self.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_length,
+        )
 
-        # Multi-GPU: distribute texts across GPUs using threads
+        if not self.multi_gpu:
+            inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            return self._run_model_on_device(inputs, self.model, self.device)
+
+        # Multi-GPU: distribute pre-tokenized inputs across GPUs using threads
         import concurrent.futures
 
         num_gpus = len(self.models)
-        chunk_size = (len(texts) + num_gpus - 1) // num_gpus
-        chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
+        batch_size = inputs["input_ids"].shape[0]
+        chunk_size = (batch_size + num_gpus - 1) // num_gpus
 
-        results = [None] * len(chunks)
+        # Split tokenized inputs into chunks
+        input_chunks = []
+        for i in range(num_gpus):
+            start = i * chunk_size
+            end = min(start + chunk_size, batch_size)
+            if start < batch_size:
+                chunk = {k: v[start:end] for k, v in inputs.items()}
+                input_chunks.append(chunk)
 
-        def encode_chunk(idx, chunk, model, device):
-            if not chunk:
+        results = [None] * len(input_chunks)
+
+        def run_on_gpu(idx, inputs_chunk, model, device):
+            if inputs_chunk["input_ids"].shape[0] == 0:
                 return idx, []
-            return idx, self._encode_on_device(chunk, model, device, max_length)
+            return idx, self._run_model_on_device(inputs_chunk, model, device)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=num_gpus) as executor:
             futures = []
-            for i, chunk in enumerate(chunks):
+            for i, chunk in enumerate(input_chunks):
                 if i < len(self.models):
                     model, device = self.models[i]
-                    futures.append(executor.submit(encode_chunk, i, chunk, model, device))
+                    futures.append(executor.submit(run_on_gpu, i, chunk, model, device))
 
             for future in concurrent.futures.as_completed(futures):
                 idx, chunk_results = future.result()
@@ -235,6 +249,56 @@ def doc_id_mapping_path(index_dir: Path) -> Path:
     return index_dir / "doc_ids.json"
 
 
+def _document_prefetcher(dataset, max_docs: int, batch_size: int, queue, resume_from: int):
+    """Background thread to prefetch document batches.
+
+    Sends tuples of (batch_doc_ids, batch_texts) to the queue.
+    Sends None when done.
+    """
+    batch_texts = []
+    batch_doc_ids = []
+    skipped_doc_ids = []
+    current_doc_idx = 0
+
+    for doc in dataset.docs_iter():
+        if max_docs > 0 and current_doc_idx >= max_docs:
+            break
+
+        doc_id = doc.doc_id
+
+        # Collect doc_ids before resume point (needed for evaluation)
+        if current_doc_idx < resume_from:
+            skipped_doc_ids.append(doc_id)
+            current_doc_idx += 1
+            continue
+
+        # Send skipped doc_ids once we start processing
+        if skipped_doc_ids:
+            queue.put((skipped_doc_ids, None))  # None texts = skipped batch
+            skipped_doc_ids = []
+
+        doc_text = doc.text if hasattr(doc, "text") else doc.body
+        batch_texts.append(doc_text)
+        batch_doc_ids.append(doc_id)
+
+        if len(batch_texts) >= batch_size:
+            queue.put((list(batch_doc_ids), list(batch_texts)))
+            batch_texts = []
+            batch_doc_ids = []
+
+        current_doc_idx += 1
+
+    # Send any remaining skipped doc_ids (if no documents to process)
+    if skipped_doc_ids:
+        queue.put((skipped_doc_ids, None))
+
+    # Send remaining batch
+    if batch_texts:
+        queue.put((list(batch_doc_ids), list(batch_texts)))
+
+    queue.put(None)  # Signal done
+
+
 def build_impact_index_streaming(
     encoder: SpladeEncoder,
     dataset,
@@ -273,12 +337,6 @@ def build_impact_index_streaming(
     start_time = time.time()
     start_cpu = time.process_time()
 
-    # Stream documents in batches
-    doc_ids = []
-    batch_texts = []
-    batch_doc_ids = []
-    current_doc_idx = 0  # Actual doc index in the dataset
-
     # Get total document count from ir_datasets if available
     total_docs = None
     if hasattr(dataset, 'docs_count'):
@@ -288,49 +346,57 @@ def build_impact_index_streaming(
     elif max_docs > 0:
         total_docs = max_docs
 
-    print("  Streaming documents...")
+    # Use prefetching with a queue to overlap I/O and GPU computation
+    import queue
+    import threading
+
+    # Effective batch size (accounts for multi-GPU)
+    effective_batch_size = batch_size * len(encoder.models) if encoder.multi_gpu else batch_size
+
+    # Queue with limited size to control memory usage (2 batches ahead)
+    prefetch_queue = queue.Queue(maxsize=2)
+
+    # Start prefetcher thread
+    prefetch_thread = threading.Thread(
+        target=_document_prefetcher,
+        args=(dataset, max_docs, effective_batch_size, prefetch_queue, resume_from),
+        daemon=True
+    )
+    prefetch_thread.start()
+
+    doc_ids = []
+    current_doc_idx = resume_from
+
+    print("  Streaming documents with prefetching...")
     with tqdm(total=total_docs, desc="Indexing", unit="doc", initial=resume_from) as pbar:
-        for doc in dataset.docs_iter():
-            if max_docs > 0 and current_doc_idx >= max_docs:
+        while True:
+            item = prefetch_queue.get()
+
+            if item is None:  # Done
                 break
 
-            doc_id = doc.doc_id
-            doc_ids.append(doc_id)
+            batch_doc_ids, batch_texts = item
 
-            # Skip encoding for documents before resume point (but still collect doc_ids)
-            if current_doc_idx < resume_from:
-                current_doc_idx += 1
+            # Add doc_ids to the list
+            doc_ids.extend(batch_doc_ids)
+
+            # Skip batch (texts is None) - just collecting doc_ids for skipped docs
+            if batch_texts is None:
                 continue
 
-            doc_text = doc.text if hasattr(doc, "text") else doc.body
-            batch_texts.append(doc_text)
-            batch_doc_ids.append(doc_id)
-
-            # Process batch when full
-            if len(batch_texts) >= batch_size:
-                encodings = encoder.encode(batch_texts)
-                for j, sparse_vec in enumerate(encodings):
-                    doc_idx = current_doc_idx - len(batch_texts) + 1 + j
-                    if sparse_vec:
-                        terms = np.array(list(sparse_vec.keys()), dtype=np.uint64)
-                        values = np.array(list(sparse_vec.values()), dtype=np.float32)
-                        indexer.add(doc_idx, terms, values)
-                pbar.update(len(batch_texts))
-                batch_texts = []
-                batch_doc_ids = []
-
-            current_doc_idx += 1
-
-        # Process remaining documents in the last batch
-        if batch_texts:
+            # Encode and index the batch
             encodings = encoder.encode(batch_texts)
             for j, sparse_vec in enumerate(encodings):
-                doc_idx = current_doc_idx - len(batch_texts) + j
+                doc_idx = current_doc_idx + j
                 if sparse_vec:
                     terms = np.array(list(sparse_vec.keys()), dtype=np.uint64)
                     values = np.array(list(sparse_vec.values()), dtype=np.float32)
                     indexer.add(doc_idx, terms, values)
+
             pbar.update(len(batch_texts))
+            current_doc_idx += len(batch_texts)
+
+    prefetch_thread.join()
 
     # Build the index
     index = indexer.build(in_memory=True)
