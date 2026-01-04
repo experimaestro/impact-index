@@ -1,7 +1,7 @@
 use std::{
     cell::RefCell,
     fs::{self, File},
-    io::{Seek, Write},
+    io::{BufReader, BufWriter, Seek, Write},
     path::{Path, PathBuf},
 };
 
@@ -42,6 +42,12 @@ pub struct BuilderOptions {
     // with a vocabulary of 32k tokens
     #[derivative(Default(value = "16384"))]
     pub in_memory_threshold: usize,
+
+    /// Ratio of in_memory_threshold to use as flush threshold during checkpoint
+    /// Posting lists with length >= in_memory_threshold * checkpoint_flush_ratio
+    /// will be flushed to disk before checkpointing to reduce checkpoint size
+    #[derivative(Default(value = "0.5"))]
+    pub checkpoint_flush_ratio: f64,
 }
 
 /// Holds a block of impacts together
@@ -111,13 +117,17 @@ impl TermsImpacts {
                     .open(info_path)
                     .expect("Error while opening checkpoint file");
 
+                // Use zstd decompression
+                let decoder = zstd::stream::Decoder::new(BufReader::new(ckpt_file))
+                    .expect("Error creating zstd decoder");
+
                 let pos: u64;
                 (
                     _self.information,
                     _self.postings_information,
                     pos,
                     _self.checkpoint_doc_id,
-                ) = ciborium::de::from_reader(ckpt_file).expect("error while reading checkpoint");
+                ) = ciborium::de::from_reader(decoder).expect("error while reading checkpoint");
 
                 // Note that we don't truncate the file since we will overwrite
                 // everything from there
@@ -139,6 +149,17 @@ impl TermsImpacts {
     /// Build a checkpoint
     fn checkpoint(&mut self, doc_id: DocId) {
         info!("Check pointing index ({})", doc_id);
+
+        // Flush large posting lists to reduce checkpoint size
+        let flush_threshold = (self.options.in_memory_threshold as f64
+            * self.options.checkpoint_flush_ratio) as usize;
+        for term_ix in 0..self.postings_information.len() {
+            if self.postings_information[term_ix].len() >= flush_threshold {
+                self.flush(term_ix)
+                    .expect("error when flushing term during checkpoint");
+            }
+        }
+
         self.postings_file
             .flush()
             .expect("error when flushing the posting file");
@@ -152,12 +173,20 @@ impl TermsImpacts {
             .open(&tmp_info_path)
             .expect("Error while creating checkpoint file");
 
+        // Use zstd compression (level 3 is a good speed/ratio balance)
+        let encoder = zstd::stream::Encoder::new(BufWriter::new(info_file), 3)
+            .expect("Error creating zstd encoder");
+        let mut encoder = encoder.auto_finish();
+
         let pos = self.postings_file.stream_position().expect("");
         ciborium::ser::into_writer(
             &(&self.information, &self.postings_information, pos, doc_id),
-            info_file,
+            &mut encoder,
         )
         .expect("Error while serializing");
+
+        // Ensure encoder is flushed before rename
+        drop(encoder);
 
         // Move file to checkpoint
         fs::rename(tmp_info_path, info_path).expect("Error when moving checkpoint.cbor in place");

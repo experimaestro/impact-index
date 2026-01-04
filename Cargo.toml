@@ -49,6 +49,8 @@ log = { version = "0.4.17", features = ["max_level_debug", "release_max_level_in
 indicatif = "0.15.0"
 # Serialization
 ciborium = { version = "0.2" }
+# Compression for checkpoints
+zstd = "0.13"
 serde_json = "1.0.120"
 bmp = { path = "BMP" }
 protobuf = "^2.27"

@@ -23,6 +23,7 @@ fn test_split_index() {
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );

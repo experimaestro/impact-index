@@ -35,6 +35,7 @@ fn test_compressed_index(#[case] step: f64, #[case] transform: CompressionTransf
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );

@@ -64,6 +64,7 @@ fn test_index() {
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );
@@ -205,6 +206,7 @@ fn test_search(
         BuilderOptions {
             in_memory_threshold: 10,
             checkpoint_frequency: checkpoint_frequency,
+            checkpoint_flush_ratio: 0.5,
         },
         &index_interruptions_set,
     );
@@ -290,6 +292,7 @@ fn test_bmp_conversion_comparison() {
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );
@@ -374,6 +377,7 @@ fn test_bmp_streaming_with_compression() {
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );
@@ -447,6 +451,7 @@ fn test_bmp_conversion_stress(
         BuilderOptions {
             checkpoint_frequency: 0,
             in_memory_threshold: 10,
+            checkpoint_flush_ratio: 0.5,
         },
         &HashSet::<DocId>::from([]),
     );
