@@ -3,10 +3,12 @@
 # requires-python = ">=3.9"
 # dependencies = [
 #     "ir-datasets",
+#     "ir-measures",
 #     "torch",
 #     "transformers",
 #     "numpy",
 #     "tqdm",
+#     "psutil",
 #     "impact-index",
 # ]
 # ///
@@ -16,8 +18,8 @@ SPLADE Indexing and Search Benchmark
 This example demonstrates:
 1. Loading a SPLADE model from HuggingFace
 2. Encoding documents and queries using SPLADE
-3. Building both impact-index and BMP indices
-4. Searching with both index types
+3. Building impact-index, BMP, and compressed indices
+4. Searching with various algorithms (WAND, MaxScore, BMP)
 5. Measuring performance (CPU time, wall time, index size)
 6. Computing IR metrics (MRR, NDCG, Recall)
 
@@ -26,18 +28,31 @@ Usage:
 
 Or with pip-installed dependencies:
     python examples/splade_benchmark.py [options]
+
+Compressed index examples:
+    # Regular compressed index with 16-bit quantization
+    --compressed-index 'nbits=16 block-size=128'
+
+    # Split compressed index (for MaxScore optimization)
+    --compressed-index 'split=0.9 nbits=8'
+
+    # Multiple configurations
+    --compressed-index 'nbits=8' --compressed-index 'split=0.8,0.95 nbits=16'
 """
 
 import argparse
 import json
 import logging
 import os
-import resource
+import re
 import tempfile
+import threading
 import time
 from collections import defaultdict
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -46,7 +61,64 @@ from transformers import AutoModelForMaskedLM, AutoTokenizer
 
 # Import the index libraries
 import impact_index
-from impact_index import BmpSearcher
+from impact_index import (
+    BmpSearcher,
+    EliasFanoCompressor,
+    GlobalImpactQuantizer,
+    CompressionTransform,
+    SplitIndexTransform,
+)
+
+
+@dataclass
+class CompressedIndexConfig:
+    """Configuration for a compressed index."""
+    nbits: int = 8
+    block_size: int = 128
+    split_quantiles: Optional[List[float]] = None
+
+    @classmethod
+    def parse(cls, config_str: str) -> "CompressedIndexConfig":
+        """Parse a configuration string like 'split=0.8,0.95 nbits=16 block-size=128'."""
+        config = cls()
+
+        # Parse key=value pairs
+        for part in config_str.split():
+            if "=" not in part:
+                raise ValueError(f"Invalid config part: {part}. Expected key=value format.")
+            key, value = part.split("=", 1)
+            key = key.strip().lower().replace("-", "_")
+
+            if key == "nbits":
+                config.nbits = int(value)
+            elif key == "block_size":
+                config.block_size = int(value)
+            elif key == "split":
+                config.split_quantiles = [float(q) for q in value.split(",")]
+            else:
+                raise ValueError(f"Unknown config key: {key}")
+
+        return config
+
+    def get_dir_name(self) -> str:
+        """Generate a unique directory name based on configuration."""
+        parts = []
+        if self.split_quantiles:
+            quantiles_str = "_".join(f"{q:.2f}".replace(".", "") for q in self.split_quantiles)
+            parts.append(f"split_{quantiles_str}")
+        parts.append(f"nb{self.nbits}")
+        parts.append(f"bs{self.block_size}")
+        return "_".join(parts)
+
+    def get_display_name(self) -> str:
+        """Get a human-readable name for display."""
+        if self.split_quantiles:
+            return f"Split({','.join(f'{q:.2f}' for q in self.split_quantiles)}) nb={self.nbits} bs={self.block_size}"
+        return f"Compressed nb={self.nbits} bs={self.block_size}"
+
+    def is_split(self) -> bool:
+        """Check if this is a split index configuration."""
+        return self.split_quantiles is not None
 
 
 def get_best_device() -> str:
@@ -60,8 +132,129 @@ def get_best_device() -> str:
 
 
 def get_memory_usage_mb() -> float:
-    """Get current memory usage in MB."""
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024 / 1024
+    """Get current memory usage in MB using psutil."""
+    import psutil
+    return psutil.Process().memory_info().rss / 1024 / 1024
+
+
+def get_current_rss_mb() -> float:
+    """Get current RSS (Resident Set Size) in MB using psutil."""
+    import psutil
+    return psutil.Process().memory_info().rss / 1024 / 1024
+
+
+@dataclass
+class PeakMemoryResult:
+    """Result of peak memory measurement."""
+    peak_mb: float
+    start_mb: float
+    end_mb: float
+    samples: int
+
+    @property
+    def delta_mb(self) -> float:
+        return self.peak_mb - self.start_mb
+
+    def to_dict(self) -> dict:
+        return {
+            "peak_mb": self.peak_mb,
+            "start_mb": self.start_mb,
+            "end_mb": self.end_mb,
+            "samples": self.samples,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "PeakMemoryResult":
+        return cls(
+            peak_mb=d["peak_mb"],
+            start_mb=d["start_mb"],
+            end_mb=d["end_mb"],
+            samples=d.get("samples", 0),
+        )
+
+
+@dataclass
+class BuildStats:
+    """Statistics from building an index."""
+    wall_time: float
+    cpu_time: float
+    memory: Optional[PeakMemoryResult]
+
+    def to_dict(self) -> dict:
+        return {
+            "wall_time": self.wall_time,
+            "cpu_time": self.cpu_time,
+            "memory": self.memory.to_dict() if self.memory else None,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BuildStats":
+        return cls(
+            wall_time=d["wall_time"],
+            cpu_time=d["cpu_time"],
+            memory=PeakMemoryResult.from_dict(d["memory"]) if d.get("memory") else None,
+        )
+
+
+class PeakMemoryTracker:
+    """Track peak memory usage during an operation using background sampling."""
+
+    def __init__(self, interval_ms: int = 50):
+        self.interval_ms = interval_ms
+        self.peak_mb = 0.0
+        self.start_mb = 0.0
+        self.end_mb = 0.0
+        self.samples = 0
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def _sample_loop(self):
+        """Background thread that samples memory usage."""
+        while not self._stop_event.wait(self.interval_ms / 1000.0):
+            current = get_current_rss_mb()
+            self.peak_mb = max(self.peak_mb, current)
+            self.samples += 1
+
+    def start(self):
+        """Start tracking memory."""
+        self.start_mb = get_current_rss_mb()
+        self.peak_mb = self.start_mb
+        self.samples = 0
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._sample_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> PeakMemoryResult:
+        """Stop tracking and return results."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join(timeout=1.0)
+        self.end_mb = get_current_rss_mb()
+        # Final sample
+        self.peak_mb = max(self.peak_mb, self.end_mb)
+        return PeakMemoryResult(
+            peak_mb=self.peak_mb,
+            start_mb=self.start_mb,
+            end_mb=self.end_mb,
+            samples=self.samples,
+        )
+
+
+@contextmanager
+def track_peak_memory(interval_ms: int = 50):
+    """Context manager to track peak memory usage during an operation.
+
+    Usage:
+        with track_peak_memory() as tracker:
+            # ... do work ...
+        print(f"Peak memory: {tracker.result.peak_mb:.2f} MB")
+    """
+    tracker = PeakMemoryTracker(interval_ms=interval_ms)
+    tracker.start()
+    try:
+        yield tracker
+    finally:
+        tracker.result = tracker.stop()
 
 
 def get_file_size_mb(path: Path) -> float:
@@ -73,6 +266,171 @@ def get_file_size_mb(path: Path) -> float:
         if f.is_file():
             total += f.stat().st_size
     return total / 1024 / 1024
+
+
+class IndexBuilder:
+    """Base class for index builders with caching and statistics tracking."""
+
+    STATS_FILE = "build_stats.json"
+
+    def __init__(self, output_path: Path):
+        self.output_path = output_path
+        self.build_stats: Optional[BuildStats] = None
+
+    @property
+    def done_file(self) -> Path:
+        """Path to the marker file indicating the build is complete."""
+        if self.output_path.suffix:
+            return self.output_path.with_suffix(".done")
+        return self.output_path / ".done"
+
+    @property
+    def stats_file(self) -> Path:
+        """Path to the build statistics file."""
+        if self.output_path.suffix:
+            return self.output_path.with_suffix(".stats.json")
+        return self.output_path / self.STATS_FILE
+
+    def is_built(self) -> bool:
+        """Check if the index has already been built."""
+        return self.done_file.exists()
+
+    def save_stats(self, stats: BuildStats):
+        """Save build statistics to disk."""
+        with open(self.stats_file, "w") as f:
+            json.dump(stats.to_dict(), f, indent=2)
+        self.build_stats = stats
+
+    def load_stats(self) -> Optional[BuildStats]:
+        """Load build statistics from disk if available."""
+        if self.stats_file.exists():
+            with open(self.stats_file, "r") as f:
+                self.build_stats = BuildStats.from_dict(json.load(f))
+                return self.build_stats
+        return None
+
+    def get_size_mb(self) -> float:
+        """Get the index size in MB."""
+        return get_file_size_mb(self.output_path)
+
+    def display_name(self) -> str:
+        """Human-readable name for display."""
+        raise NotImplementedError
+
+    def _do_build(self, source_index: impact_index.Index):
+        """Perform the actual build. Must be implemented by subclasses."""
+        raise NotImplementedError
+
+    def _load_index(self):
+        """Load the built index. Must be implemented by subclasses."""
+        raise NotImplementedError
+
+    def build(self, source_index: impact_index.Index):
+        """Build the index with caching, timing, and memory tracking."""
+        print(f"\n=== Building {self.display_name()} ===")
+
+        if self.is_built():
+            print("  Index already built, loading from disk...")
+            stats = self.load_stats()
+            if stats:
+                print(f"  (Previous build: {stats.wall_time:.2f}s wall, "
+                      f"{stats.cpu_time:.2f}s CPU", end="")
+                if stats.memory:
+                    print(f", peak mem: {stats.memory.peak_mb:.2f} MB", end="")
+                print(")")
+            print(f"  Index size: {self.get_size_mb():.2f} MB")
+            return self._load_index()
+
+        # Create output directory if needed
+        if not self.output_path.suffix:
+            self.output_path.mkdir(parents=True, exist_ok=True)
+
+        start_time = time.time()
+        start_cpu = time.process_time()
+
+        with track_peak_memory() as mem_tracker:
+            self._do_build(source_index)
+
+        end_time = time.time()
+        end_cpu = time.process_time()
+        mem_result = mem_tracker.result
+
+        # Save statistics
+        stats = BuildStats(
+            wall_time=end_time - start_time,
+            cpu_time=end_cpu - start_cpu,
+            memory=mem_result,
+        )
+        self.save_stats(stats)
+
+        # Mark as done
+        self.done_file.touch()
+
+        print(f"  Wall time: {stats.wall_time:.2f}s")
+        print(f"  CPU time: {stats.cpu_time:.2f}s")
+        print(f"  Peak memory: {mem_result.peak_mb:.2f} MB (delta: {mem_result.delta_mb:.2f} MB)")
+        print(f"  Index size: {self.get_size_mb():.2f} MB")
+
+        # Load and return the built index
+        return self._load_index()
+
+
+class BmpIndexBuilder(IndexBuilder):
+    """Builder for BMP index."""
+
+    def __init__(self, output_path: Path, bsize: int = 64,
+                 compress_range: bool = True, use_streaming: bool = True):
+        super().__init__(output_path)
+        self.bsize = bsize
+        self.compress_range = compress_range
+        self.use_streaming = use_streaming
+
+    def display_name(self) -> str:
+        method = "streaming" if self.use_streaming else "legacy"
+        return f"BMP Index ({method})"
+
+    def _do_build(self, source_index: impact_index.Index):
+        if self.use_streaming:
+            source_index.to_bmp_streaming(str(self.output_path), self.bsize, self.compress_range)
+        else:
+            source_index.to_bmp(str(self.output_path), self.bsize, self.compress_range)
+
+    def _load_index(self) -> BmpSearcher:
+        return BmpSearcher(str(self.output_path))
+
+    def build(self, source_index: impact_index.Index) -> BmpSearcher:
+        return super().build(source_index)
+
+
+class CompressedIndexBuilder(IndexBuilder):
+    """Builder for compressed (and optionally split) index."""
+
+    def __init__(self, output_path: Path, config: CompressedIndexConfig):
+        super().__init__(output_path)
+        self.config = config
+
+    def display_name(self) -> str:
+        return self.config.get_display_name()
+
+    def _do_build(self, source_index: impact_index.Index):
+        # Create compression transform
+        doc_ids_compressor = EliasFanoCompressor()
+        impact_compressor = GlobalImpactQuantizer(self.config.nbits)
+        compression_transform = CompressionTransform(
+            self.config.block_size, doc_ids_compressor, impact_compressor
+        )
+
+        # Optionally wrap with split transform
+        if self.config.is_split():
+            transform = SplitIndexTransform(self.config.split_quantiles, compression_transform)
+        else:
+            transform = compression_transform
+
+        # Apply transform
+        transform.process(str(self.output_path), source_index)
+
+    def _load_index(self) -> impact_index.Index:
+        return impact_index.Index.load(str(self.output_path), in_memory=True)
 
 
 class SpladeEncoder:
@@ -218,8 +576,13 @@ class SpladeEncoder:
         return results
 
 
-def load_queries_and_qrels(dataset_name: str, max_queries: int = None):
-    """Load queries and qrels from dataset (lightweight, kept in memory)."""
+def load_queries_and_qrels(dataset_name: str, max_queries: int = 0):
+    """Load queries and qrels from dataset (lightweight, kept in memory).
+
+    Args:
+        dataset_name: ir_datasets dataset name
+        max_queries: Maximum number of queries to load (0 = all)
+    """
     import ir_datasets
 
     print(f"Loading dataset '{dataset_name}'...")
@@ -228,18 +591,27 @@ def load_queries_and_qrels(dataset_name: str, max_queries: int = None):
     # Load queries
     queries = []
     query_ids = []
+    query_ids_set = set()
     print("Loading queries...")
     for i, query in enumerate(dataset.queries_iter()):
         if max_queries > 0 and i >= max_queries:
             break
         queries.append(query.text if hasattr(query, "text") else str(query))
         query_ids.append(query.query_id)
+        query_ids_set.add(query.query_id)
 
-    # Load qrels
+    print(f"  Loaded {len(queries)} queries" + (f" (limited from max_queries={max_queries})" if max_queries > 0 else ""))
+
+    # Load qrels (only for loaded queries)
     qrels = defaultdict(dict)
     print("Loading qrels...")
+    total_qrels = 0
     for qrel in dataset.qrels_iter():
-        qrels[qrel.query_id][qrel.doc_id] = qrel.relevance
+        if qrel.query_id in query_ids_set:
+            qrels[qrel.query_id][qrel.doc_id] = qrel.relevance
+            total_qrels += 1
+
+    print(f"  Loaded {total_qrels} qrels for {len(qrels)} queries")
 
     return dataset, queries, query_ids, qrels
 
@@ -419,50 +791,6 @@ def build_impact_index_streaming(
     return index, doc_ids
 
 
-def build_bmp_index(
-    index: impact_index.Index,
-    bmp_path: Path,
-    bsize: int = 64,
-    compress_range: bool = True,
-    use_streaming: bool = True,
-) -> BmpSearcher:
-    """Convert impact-index to BMP format."""
-    print("\n=== Building BMP Index ===")
-    method = "streaming" if use_streaming else "legacy"
-    print(f"  Method: {method}")
-
-    done_file = bmp_path.with_suffix(".done")
-
-    # Check if BMP index already exists
-    if done_file.exists() and bmp_path.exists():
-        print("  BMP index already built, loading from disk...")
-        print(f"  BMP index size: {get_file_size_mb(bmp_path):.2f} MB")
-        return BmpSearcher(str(bmp_path))
-
-    start_time = time.time()
-    start_cpu = time.process_time()
-    start_mem = get_memory_usage_mb()
-
-    if use_streaming:
-        index.to_bmp_streaming(str(bmp_path), bsize, compress_range)
-    else:
-        index.to_bmp(str(bmp_path), bsize, compress_range)
-
-    end_time = time.time()
-    end_cpu = time.process_time()
-    end_mem = get_memory_usage_mb()
-
-    # Mark as done
-    done_file.touch()
-
-    print(f"  Wall time: {end_time - start_time:.2f}s")
-    print(f"  CPU time: {end_cpu - start_cpu:.2f}s")
-    print(f"  Memory delta: {end_mem - start_mem:.2f} MB")
-    print(f"  BMP index size: {get_file_size_mb(bmp_path):.2f} MB")
-
-    return BmpSearcher(str(bmp_path))
-
-
 def search_impact_index(
     index: impact_index.Index,
     query_encodings: List[Dict[int, float]],
@@ -533,58 +861,40 @@ def compute_metrics(
     doc_ids: List[str],
     k_values: List[int] = [10, 100],
 ) -> Dict[str, float]:
-    """Compute IR metrics: MRR, NDCG, Recall."""
-    metrics = {}
+    """Compute IR metrics using ir-measures: MRR, NDCG, Recall."""
+    import ir_measures
+    from ir_measures import Qrel, ScoredDoc, nDCG, RR, Recall
 
+    # Convert results to ir-measures run format (iterator of ScoredDoc namedtuples)
+    def run_iter():
+        for query_id, hits in zip(query_ids, results):
+            for doc_idx, score in hits:
+                yield ScoredDoc(query_id, doc_ids[doc_idx], score)
+
+    # Convert qrels to ir-measures format (iterator of Qrel namedtuples)
+    def qrels_iter():
+        for query_id, doc_rels in qrels.items():
+            for doc_id, relevance in doc_rels.items():
+                yield Qrel(query_id, doc_id, relevance)
+
+    # Define metrics to compute
+    measures = []
     for k in k_values:
-        mrr_sum = 0.0
-        ndcg_sum = 0.0
-        recall_sum = 0.0
-        num_queries = 0
+        measures.extend([nDCG@k, RR@k, Recall@k])
 
-        for i, (query_id, hits) in enumerate(zip(query_ids, results)):
-            if query_id not in qrels:
-                continue
+    # Compute metrics
+    results_dict = ir_measures.calc_aggregate(measures, qrels_iter(), run_iter())
 
-            rel_docs = qrels[query_id]
-            num_relevant = sum(1 for r in rel_docs.values() if r > 0)
-
-            if num_relevant == 0:
-                continue
-
-            num_queries += 1
-
-            # Get retrieved doc_ids
-            retrieved = [doc_ids[doc_idx] for doc_idx, _ in hits[:k]]
-
-            # MRR
-            for rank, doc_id in enumerate(retrieved, 1):
-                if doc_id in rel_docs and rel_docs[doc_id] > 0:
-                    mrr_sum += 1.0 / rank
-                    break
-
-            # Recall@k
-            num_retrieved_relevant = sum(1 for d in retrieved if d in rel_docs and rel_docs[d] > 0)
-            recall_sum += num_retrieved_relevant / min(num_relevant, k)
-
-            # NDCG@k
-            dcg = 0.0
-            for rank, doc_id in enumerate(retrieved, 1):
-                if doc_id in rel_docs:
-                    rel = rel_docs[doc_id]
-                    dcg += (2**rel - 1) / np.log2(rank + 1)
-
-            # Ideal DCG
-            ideal_rels = sorted([r for r in rel_docs.values() if r > 0], reverse=True)[:k]
-            idcg = sum((2**rel - 1) / np.log2(rank + 1) for rank, rel in enumerate(ideal_rels, 1))
-
-            if idcg > 0:
-                ndcg_sum += dcg / idcg
-
-        if num_queries > 0:
-            metrics[f"MRR@{k}"] = mrr_sum / num_queries
-            metrics[f"NDCG@{k}"] = ndcg_sum / num_queries
-            metrics[f"Recall@{k}"] = recall_sum / num_queries
+    # Convert to our output format
+    metrics = {}
+    for measure, value in results_dict.items():
+        # Convert measure name to our format (e.g., "nDCG@10" -> "NDCG@10")
+        name = str(measure)
+        if name.startswith("nDCG"):
+            name = name.replace("nDCG", "NDCG")
+        elif name.startswith("RR"):
+            name = name.replace("RR", "MRR")
+        metrics[name] = value
 
     return metrics
 
@@ -632,7 +942,30 @@ def main():
         choices=["error", "warn", "info", "debug", "trace"],
         help="Rust log level (default: warn)",
     )
+    parser.add_argument(
+        "--compressed-index",
+        type=str,
+        action="append",
+        dest="compressed_indices",
+        metavar="CONFIG",
+        help=(
+            "Add a compressed index configuration. Can be specified multiple times. "
+            "Format: 'key=value key=value ...'. Available keys: "
+            "nbits (default: 8), block-size (default: 128), split (comma-separated quantiles). "
+            "Examples: 'nbits=16 block-size=128', 'split=0.9 nbits=8', 'split=0.8,0.95 nbits=16'"
+        ),
+    )
     args = parser.parse_args()
+
+    # Parse compressed index configurations
+    args.index_configs = []
+    if args.compressed_indices:
+        for config_str in args.compressed_indices:
+            try:
+                config = CompressedIndexConfig.parse(config_str)
+                args.index_configs.append(config)
+            except ValueError as e:
+                parser.error(f"Invalid --compressed-index config '{config_str}': {e}")
 
     # Setup Rust logging via RUST_LOG environment variable
     os.environ["RUST_LOG"] = args.log_level
@@ -674,7 +1007,6 @@ def main():
         dataset, queries, query_ids, qrels = load_queries_and_qrels(
             args.dataset, max_queries=args.max_queries
         )
-        print(f"\nLoaded {len(queries)} queries")
 
         # Encode queries
         print("\n=== Encoding Queries ===")
@@ -684,14 +1016,14 @@ def main():
 
         # Build BMP index (streaming)
         bmp_path = output_dir / "index_streaming.bmp"
-        bmp_searcher = build_bmp_index(impact_idx, bmp_path, bsize=args.bsize, use_streaming=True)
+        bmp_builder = BmpIndexBuilder(bmp_path, bsize=args.bsize, use_streaming=True)
+        bmp_searcher = bmp_builder.build(impact_idx)
 
         # Optionally compare with legacy BMP conversion
         if args.compare_bmp_methods:
             bmp_legacy_path = output_dir / "index_legacy.bmp"
-            bmp_legacy_searcher = build_bmp_index(
-                impact_idx, bmp_legacy_path, bsize=args.bsize, use_streaming=False
-            )
+            bmp_legacy_builder = BmpIndexBuilder(bmp_legacy_path, bsize=args.bsize, use_streaming=False)
+            bmp_legacy_searcher = bmp_legacy_builder.build(impact_idx)
 
         # Search with WAND
         print("\n=== Searching with WAND ===")
@@ -715,6 +1047,69 @@ def main():
         print(f"  Wall time: {bmp_wall:.2f}s ({len(queries)/bmp_wall:.1f} q/s)")
         print(f"  CPU time: {bmp_cpu:.2f}s")
 
+        # Compressed index benchmarks (from --compressed-index configurations)
+        # Each entry contains: builder, index, and search results
+        configured_indices = []
+
+        for config in args.index_configs:
+            index_dir_name = config.get_dir_name()
+            config_dir = output_dir / f"index_{index_dir_name}"
+
+            # Build the index using the builder class
+            builder = CompressedIndexBuilder(config_dir, config)
+            configured_idx = builder.build(impact_idx)
+
+            # Determine which search methods to use
+            # Split indices only use MaxScore (it's designed for that)
+            # Non-split indices use both WAND and MaxScore
+            results = {
+                "config": config,
+                "builder": builder,
+                "dir": config_dir,
+                "index": configured_idx,
+            }
+
+            if config.is_split():
+                # Split index: only MaxScore
+                print(f"\n=== Searching {config.get_display_name()} with MaxScore ===")
+                maxscore_results, wall, cpu = search_impact_index(
+                    configured_idx, query_encodings, top_k=args.top_k, method="maxscore"
+                )
+                print(f"  Wall time: {wall:.2f}s ({len(queries)/wall:.1f} q/s)")
+                print(f"  CPU time: {cpu:.2f}s")
+                results["maxscore"] = {
+                    "results": maxscore_results,
+                    "wall": wall,
+                    "cpu": cpu,
+                }
+            else:
+                # Regular compressed index: WAND and MaxScore
+                print(f"\n=== Searching {config.get_display_name()} with WAND ===")
+                wand_results_cfg, wand_wall, wand_cpu = search_impact_index(
+                    configured_idx, query_encodings, top_k=args.top_k, method="wand"
+                )
+                print(f"  Wall time: {wand_wall:.2f}s ({len(queries)/wand_wall:.1f} q/s)")
+                print(f"  CPU time: {wand_cpu:.2f}s")
+                results["wand"] = {
+                    "results": wand_results_cfg,
+                    "wall": wand_wall,
+                    "cpu": wand_cpu,
+                }
+
+                print(f"\n=== Searching {config.get_display_name()} with MaxScore ===")
+                maxscore_results_cfg, maxscore_wall_cfg, maxscore_cpu_cfg = search_impact_index(
+                    configured_idx, query_encodings, top_k=args.top_k, method="maxscore"
+                )
+                print(f"  Wall time: {maxscore_wall_cfg:.2f}s ({len(queries)/maxscore_wall_cfg:.1f} q/s)")
+                print(f"  CPU time: {maxscore_cpu_cfg:.2f}s")
+                results["maxscore"] = {
+                    "results": maxscore_results_cfg,
+                    "wall": maxscore_wall_cfg,
+                    "cpu": maxscore_cpu_cfg,
+                }
+
+            configured_indices.append(results)
+
         # Compute metrics
         print("\n=== IR Metrics ===")
         print("\nWAND:")
@@ -732,6 +1127,25 @@ def main():
         for metric, value in sorted(bmp_metrics.items()):
             print(f"  {metric}: {value:.4f}")
 
+        # Compute metrics for configured indices
+        for entry in configured_indices:
+            config = entry["config"]
+            if "wand" in entry:
+                entry["wand"]["metrics"] = compute_metrics(
+                    entry["wand"]["results"], query_ids, qrels, doc_ids
+                )
+                print(f"\n{config.get_display_name()} WAND:")
+                for metric, value in sorted(entry["wand"]["metrics"].items()):
+                    print(f"  {metric}: {value:.4f}")
+
+            if "maxscore" in entry:
+                entry["maxscore"]["metrics"] = compute_metrics(
+                    entry["maxscore"]["results"], query_ids, qrels, doc_ids
+                )
+                print(f"\n{config.get_display_name()} MaxScore:")
+                for metric, value in sorted(entry["maxscore"]["metrics"].items()):
+                    print(f"  {metric}: {value:.4f}")
+
         # Summary
         print("\n" + "=" * 60)
         print("SUMMARY")
@@ -744,43 +1158,86 @@ def main():
         print("\nIndex Sizes:")
         print(f"  Standard Index: {get_file_size_mb(index_dir):.2f} MB")
         print(f"  BMP Index: {get_file_size_mb(bmp_path):.2f} MB")
+        for entry in configured_indices:
+            config = entry["config"]
+            print(f"  {config.get_display_name()}: {get_file_size_mb(entry['dir']):.2f} MB")
 
         print("\nSearch Performance:")
         print(f"  WAND:     {wand_wall:.2f}s wall, {wand_cpu:.2f}s CPU ({len(queries)/wand_wall:.1f} q/s)")
         print(f"  MaxScore: {maxscore_wall:.2f}s wall, {maxscore_cpu:.2f}s CPU ({len(queries)/maxscore_wall:.1f} q/s)")
         print(f"  BMP:      {bmp_wall:.2f}s wall, {bmp_cpu:.2f}s CPU ({len(queries)/bmp_wall:.1f} q/s)")
-
-        print("\nKey Metrics:")
-        for k in [10, 100]:
-            if f"MRR@{k}" in wand_metrics:
-                print(f"  MRR@{k}:    WAND={wand_metrics[f'MRR@{k}']:.4f}, MaxScore={maxscore_metrics[f'MRR@{k}']:.4f}, BMP={bmp_metrics[f'MRR@{k}']:.4f}")
-            if f"NDCG@{k}" in wand_metrics:
-                print(f"  NDCG@{k}:   WAND={wand_metrics[f'NDCG@{k}']:.4f}, MaxScore={maxscore_metrics[f'NDCG@{k}']:.4f}, BMP={bmp_metrics[f'NDCG@{k}']:.4f}")
-            if f"Recall@{k}" in wand_metrics:
-                print(f"  Recall@{k}: WAND={wand_metrics[f'Recall@{k}']:.4f}, MaxScore={maxscore_metrics[f'Recall@{k}']:.4f}, BMP={bmp_metrics[f'Recall@{k}']:.4f}")
+        for entry in configured_indices:
+            config = entry["config"]
+            if "wand" in entry:
+                w = entry["wand"]
+                print(f"  {config.get_display_name()} WAND: {w['wall']:.2f}s wall, {w['cpu']:.2f}s CPU ({len(queries)/w['wall']:.1f} q/s)")
+            if "maxscore" in entry:
+                m = entry["maxscore"]
+                print(f"  {config.get_display_name()} MaxScore: {m['wall']:.2f}s wall, {m['cpu']:.2f}s CPU ({len(queries)/m['wall']:.1f} q/s)")
 
         # Save results to JSON
         results_path = output_dir / "benchmark_results.json"
+        index_sizes = {
+            "standard_index": get_file_size_mb(index_dir),
+            "bmp_index": get_file_size_mb(bmp_path),
+        }
+        search_times = {
+            "wand": {"wall": wand_wall, "cpu": wand_cpu},
+            "maxscore": {"wall": maxscore_wall, "cpu": maxscore_cpu},
+            "bmp": {"wall": bmp_wall, "cpu": bmp_cpu},
+        }
+        metrics = {
+            "wand": wand_metrics,
+            "maxscore": maxscore_metrics,
+            "bmp": bmp_metrics,
+        }
+
+        # Add configured index results
+        configured_results = []
+        for entry in configured_indices:
+            config = entry["config"]
+            builder: CompressedIndexBuilder = entry["builder"]
+            config_result = {
+                "config": {
+                    "nbits": config.nbits,
+                    "block_size": config.block_size,
+                    "split_quantiles": config.split_quantiles,
+                },
+                "display_name": config.get_display_name(),
+                "index_size_mb": builder.get_size_mb(),
+            }
+            if builder.build_stats:
+                config_result["build_stats"] = builder.build_stats.to_dict()
+            if "wand" in entry:
+                config_result["wand"] = {
+                    "wall": entry["wand"]["wall"],
+                    "cpu": entry["wand"]["cpu"],
+                    "metrics": entry["wand"]["metrics"],
+                }
+            if "maxscore" in entry:
+                config_result["maxscore"] = {
+                    "wall": entry["maxscore"]["wall"],
+                    "cpu": entry["maxscore"]["cpu"],
+                    "metrics": entry["maxscore"]["metrics"],
+                }
+            configured_results.append(config_result)
+
+        # Add BMP build stats
+        bmp_build_info = {"index_size_mb": bmp_builder.get_size_mb()}
+        if bmp_builder.build_stats:
+            bmp_build_info["build_stats"] = bmp_builder.build_stats.to_dict()
+
         results = {
-            "config": vars(args),
+            "config": {k: v for k, v in vars(args).items() if k != "index_configs"},
             "dataset_stats": {
                 "num_docs": len(doc_ids),
                 "num_queries": len(queries),
             },
-            "index_sizes_mb": {
-                "standard_index": get_file_size_mb(index_dir),
-                "bmp_index": get_file_size_mb(bmp_path),
-            },
-            "search_time_seconds": {
-                "wand": {"wall": wand_wall, "cpu": wand_cpu},
-                "maxscore": {"wall": maxscore_wall, "cpu": maxscore_cpu},
-                "bmp": {"wall": bmp_wall, "cpu": bmp_cpu},
-            },
-            "metrics": {
-                "wand": wand_metrics,
-                "maxscore": maxscore_metrics,
-                "bmp": bmp_metrics,
-            },
+            "index_sizes_mb": index_sizes,
+            "search_time_seconds": search_times,
+            "metrics": metrics,
+            "bmp_build": bmp_build_info,
+            "configured_indices": configured_results,
         }
         with open(results_path, "w") as f:
             json.dump(results, f, indent=2)
