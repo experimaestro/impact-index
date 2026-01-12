@@ -1014,6 +1014,12 @@ def main():
             queries, batch_size=args.batch_size, desc="Encoding queries", unit="query"
         )
 
+        # Save query encodings for debugging
+        query_encodings_file = output_dir / "query_encodings.json"
+        with open(query_encodings_file, "w") as f:
+            json.dump([{str(k): v for k, v in q.items()} for q in query_encodings], f)
+        print(f"  Saved query encodings to {query_encodings_file}")
+
         # Build BMP index (streaming)
         bmp_path = output_dir / "index_streaming.bmp"
         bmp_builder = BmpIndexBuilder(bmp_path, bsize=args.bsize, use_streaming=True)
@@ -1040,6 +1046,30 @@ def main():
         )
         print(f"  Wall time: {maxscore_wall:.2f}s ({len(queries)/maxscore_wall:.1f} q/s)")
         print(f"  CPU time: {maxscore_cpu:.2f}s")
+
+        # Compare WAND vs MaxScore results directly
+        print("\n=== Comparing WAND vs MaxScore (same index, same run) ===")
+        doc_set_diffs = 0
+        ranking_diffs_top10 = 0
+        total_only_wand = 0
+        total_only_maxscore = 0
+        for i, (wand_hits, maxscore_hits) in enumerate(zip(wand_results, maxscore_results)):
+            wand_docs = set(d for d, s in wand_hits)
+            maxscore_docs = set(d for d, s in maxscore_hits)
+            only_wand = wand_docs - maxscore_docs
+            only_maxscore = maxscore_docs - wand_docs
+            if only_wand or only_maxscore:
+                doc_set_diffs += 1
+                total_only_wand += len(only_wand)
+                total_only_maxscore += len(only_maxscore)
+            wand_top10 = [d for d, s in wand_hits[:10]]
+            maxscore_top10 = [d for d, s in maxscore_hits[:10]]
+            if wand_top10 != maxscore_top10:
+                ranking_diffs_top10 += 1
+        print(f"  Queries with TOP 10 ranking differences: {ranking_diffs_top10}")
+        print(f"  Queries with document set differences: {doc_set_diffs}")
+        print(f"  Total docs only in WAND: {total_only_wand}")
+        print(f"  Total docs only in MaxScore: {total_only_maxscore}")
 
         # Search with BMP
         print("\n=== Searching with BMP ===")
@@ -1085,15 +1115,15 @@ def main():
             else:
                 # Regular compressed index: WAND and MaxScore
                 print(f"\n=== Searching {config.get_display_name()} with WAND ===")
-                wand_results_cfg, wand_wall, wand_cpu = search_impact_index(
+                wand_results_cfg, wand_wall_cfg, wand_cpu_cfg = search_impact_index(
                     configured_idx, query_encodings, top_k=args.top_k, method="wand"
                 )
-                print(f"  Wall time: {wand_wall:.2f}s ({len(queries)/wand_wall:.1f} q/s)")
-                print(f"  CPU time: {wand_cpu:.2f}s")
+                print(f"  Wall time: {wand_wall_cfg:.2f}s ({len(queries)/wand_wall_cfg:.1f} q/s)")
+                print(f"  CPU time: {wand_cpu_cfg:.2f}s")
                 results["wand"] = {
                     "results": wand_results_cfg,
-                    "wall": wand_wall,
-                    "cpu": wand_cpu,
+                    "wall": wand_wall_cfg,
+                    "cpu": wand_cpu_cfg,
                 }
 
                 print(f"\n=== Searching {config.get_display_name()} with MaxScore ===")
