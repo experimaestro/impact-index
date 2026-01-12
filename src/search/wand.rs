@@ -154,18 +154,18 @@ pub fn search_wand<'a>(
 
     // Loop until there are no more candidates
     while let Some(candidate) = search.next(theta) {
-        // Compute the score of the candidate
-        let mut score: ImpactValue = 0.;
+        // Compute the score of the candidate (accumulate in f64 for precision)
+        let mut score: f64 = 0.;
         for x in search.iterators.iter() {
             let c = x.iterator.current();
             if c.docid != candidate {
                 break;
             }
-            score += x.query_weight * c.value;
+            score += (x.query_weight * c.value) as f64;
         }
 
         // Update the heap
-        theta = results.add(candidate, score).max(0.);
+        theta = results.add(candidate, score as f32).max(0.);
     }
 
     results.into_sorted_vec()
