@@ -212,7 +212,7 @@ fn test_search(
     );
     let index = match index_type {
         IndexType::InMemory => Box::new(data.indexer.to_index(true)),
-        IndexType::Disk => Box::new(load_forward_index(data.dir.path(), true)),
+        IndexType::Disk => Box::new(load_forward_index::<f32>(data.dir.path(), true)),
         IndexType::Split2 => {
             let transform = SplitIndexTransform {
                 sink: Box::new(CompressionTransform {

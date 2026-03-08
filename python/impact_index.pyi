@@ -6,10 +6,15 @@ retrieval systems, built on Rust with PyO3 bindings.
 
 from __future__ import annotations
 
-from typing import Awaitable, Optional
+from typing import Awaitable, Optional, Union
 
 import numpy as np
 import numpy.typing as npt
+
+DType = Union[str, np.dtype, type]
+"""Accepted dtype specifications: string names (``"float32"``, ``"float16"``,
+``"bfloat16"``, ``"float64"``, ``"int32"``, ``"int64"``), numpy dtype objects
+(``np.dtype("float16")``), or numpy type classes (``np.float32``)."""
 
 
 class TermImpact:
@@ -231,13 +236,22 @@ class IndexBuilder:
         index = builder.build(in_memory=True)
     """
 
-    def __init__(self, folder: str, options: Optional[BuilderOptions] = None) -> None:
+    def __init__(
+        self,
+        folder: str,
+        options: Optional[BuilderOptions] = None,
+        dtype: Optional[DType] = None,
+    ) -> None:
         """Create a new IndexBuilder.
 
         Args:
             folder: Directory where the index files will be written.
             options: Optional :class:`BuilderOptions` for checkpointing
                 and memory control.
+            dtype: Value type for on-disk storage. Accepts string names
+                (``"float32"``, ``"float16"``, ``"bfloat16"``, ``"float64"``,
+                ``"int32"``, ``"int64"``), numpy dtype objects, or numpy type
+                classes (e.g., ``np.float16``). Default is ``"float32"``.
         """
         ...
 
@@ -245,15 +259,16 @@ class IndexBuilder:
         self,
         docid: int,
         terms: npt.NDArray[np.uintp],
-        values: npt.NDArray[np.float32],
+        values: npt.NDArray,
     ) -> None:
         """Add a document to the index.
 
         Args:
             docid: Unique document identifier (must be strictly increasing).
             terms: numpy array of term indices (``dtype=np.uintp``).
-            values: numpy array of impact values (``dtype=np.float32``,
-                must be > 0).
+            values: numpy array of impact values (any numeric dtype,
+                must be > 0). Values are converted to the builder's
+                dtype automatically.
         """
         ...
 

@@ -57,6 +57,7 @@ ciborium = { version = "0.2" }
 zstd = "0.13"
 serde_json = "1.0.120"
 bmp = { path = "BMP" }
+half = { version = "2", features = ["serde", "bytemuck"] }
 protobuf = "^2.27"
 # FST for term map (same as BMP uses)
 fst = "0.4.7"

@@ -23,7 +23,7 @@ use super::{
     index::{IndexInformation, TermIndexPageInformation},
 };
 use crate::{
-    base::{BoxResult, DocId, ImpactValue, TermIndex},
+    base::{BoxResult, DocId, GenericTermImpact, ImpactValue, PostingValue, TermIndex, ValueType},
     index::{SparseIndexInformation, TermIndexInformation},
 };
 use crate::{
@@ -64,11 +64,12 @@ pub struct BuilderOptions {
 /// Holds a block of impacts together
 /// with the information
 #[derive(Serialize, Deserialize)]
-struct PostingsInformation {
-    postings: Vec<TermImpact>,
+#[serde(bound(deserialize = "V: PostingValue"))]
+struct PostingsInformation<V: PostingValue> {
+    postings: Vec<GenericTermImpact<V>>,
     information: TermIndexPageInformation,
 }
-impl PostingsInformation {
+impl<V: PostingValue> PostingsInformation<V> {
     fn new() -> Self {
         Self {
             postings: Vec::new(),
@@ -82,21 +83,21 @@ impl PostingsInformation {
     }
 }
 
-struct TermsImpacts {
+struct TermsImpacts<V: PostingValue> {
     /// When using checkpointing, this is the last doc ID
     checkpoint_doc_id: Option<DocId>,
     options: BuilderOptions,
     folder: PathBuf,
     postings_file: std::fs::File,
     information: IndexInformation,
-    postings_information: Vec<PostingsInformation>,
+    postings_information: Vec<PostingsInformation<V>>,
 }
 
-impl TermsImpacts {
+impl<V: PostingValue> TermsImpacts<V> {
     /**
      * Create a new term impacts in memory structure
      */
-    fn new(folder: &Path, options: &BuilderOptions) -> TermsImpacts {
+    fn new(folder: &Path, options: &BuilderOptions) -> TermsImpacts<V> {
         let path = folder.join(format!("postings.dat"));
 
         let mut file_options = File::options();
@@ -210,9 +211,12 @@ impl TermsImpacts {
         &mut self,
         term_ix: TermIndex,
         docid: DocId,
-        value: ImpactValue,
+        value: V,
     ) -> Result<(), std::io::Error> {
-        assert!(value > 0., "Impact values should be greater than 0");
+        assert!(
+            value.is_positive(),
+            "Impact values should be greater than 0"
+        );
 
         // Adds new vectors for missing words
         if term_ix >= self.postings_information.len() {
@@ -231,20 +235,22 @@ impl TermsImpacts {
         // Update the postings information
         let p_info = &mut self.postings_information[term_ix];
 
-        p_info.postings.push(TermImpact {
+        p_info.postings.push(GenericTermImpact {
             docid: docid,
             value: value,
         });
-        if p_info.information.max_value < value {
-            p_info.information.max_value = value;
+
+        let value_f32 = value.to_f32();
+        if p_info.information.max_value < value_f32 {
+            p_info.information.max_value = value_f32;
         }
 
         // Update the term information
         let info = &mut self.information.terms[term_ix];
         info.length += 1;
 
-        if info.max_value < value {
-            info.max_value = value
+        if info.max_value < value_f32 {
+            info.max_value = value_f32
         }
 
         assert!(
@@ -282,7 +288,6 @@ impl TermsImpacts {
             PostingsInformation::new(),
         );
         postings_info.information.docid_position = position;
-        // postings_info.information.min_doc_id = postings_info.postings[0].docid;
         postings_info.information.max_doc_id = postings_info
             .postings
             .last()
@@ -297,7 +302,7 @@ impl TermsImpacts {
         // outputs the postings for this term
         for ti in postings_info.postings.iter() {
             self.postings_file.write_u64::<BigEndian>(ti.docid)?;
-            self.postings_file.write_f32::<BigEndian>(ti.value)?;
+            ti.value.write_be(&mut self.postings_file)?;
         }
 
         Ok(())
@@ -318,15 +323,18 @@ impl TermsImpacts {
 /// documents have been added, call [`build`](Indexer::build) to finalize
 /// the on-disk structure, then [`to_index`](Indexer::to_index) to obtain
 /// a searchable index.
-pub struct Indexer {
-    impacts: TermsImpacts,
+///
+/// The type parameter `V` specifies the value type stored on disk.
+/// Common choices are `f32`, `f16`, `bf16`, `f64`, `i32`, `i64`.
+pub struct Indexer<V: PostingValue = f32> {
+    impacts: TermsImpacts<V>,
     folder: PathBuf,
     built: bool,
 }
 
-impl Indexer {
+impl<V: PostingValue> Indexer<V> {
     /// Creates a new indexer writing to the given directory.
-    pub fn new(folder: &Path, options: &BuilderOptions) -> Indexer {
+    pub fn new(folder: &Path, options: &BuilderOptions) -> Indexer<V> {
         Indexer {
             impacts: TermsImpacts::new(folder, options),
             folder: folder.to_path_buf(),
@@ -360,7 +368,7 @@ impl Indexer {
     ) -> Result<(), std::io::Error>
     where
         S: Data<Elem = TermIndex>,
-        T: Data<Elem = ImpactValue>,
+        T: Data<Elem = V>,
     {
         assert!(
             !self.built,
@@ -406,7 +414,9 @@ impl Indexer {
                 .open(info_path)
                 .expect("Error while creating file");
 
-            ciborium::ser::into_writer(&self.impacts.information, info_file)
+            // Store both the value type and the index information
+            let value_type = crate::base::value_type_of::<V>();
+            ciborium::ser::into_writer(&(value_type, &self.impacts.information), info_file)
                 .expect("Error while serializing");
 
             // Remove old checkpoint
@@ -424,7 +434,7 @@ impl Indexer {
     }
 
     /// Returns a sparse index (the index has to be built)
-    pub fn to_index(&mut self, in_memory: bool) -> SparseBuilderIndex {
+    pub fn to_index(&mut self, in_memory: bool) -> SparseBuilderIndex<V> {
         assert!(self.built, "Index is not built");
         assert!(
             self.impacts.information.terms.len() > 0,
@@ -439,15 +449,18 @@ impl Indexer {
 ///
 /// Supports searching via block-based iteration. Typically used as an
 /// intermediate step before applying compression or splitting transforms.
-pub struct SparseBuilderIndex {
+pub struct SparseBuilderIndex<V: PostingValue = f32> {
     /// Term information
     terms: Vec<TermIndexInformation>,
 
     /// View on the postings
     buffer: Box<dyn Buffer>,
+
+    /// Phantom for the value type
+    _phantom: std::marker::PhantomData<V>,
 }
 
-impl SparseBuilderIndex {
+impl<V: PostingValue> SparseBuilderIndex<V> {
     fn new(terms: Vec<TermIndexInformation>, path: &PathBuf, in_memory: bool) -> Self {
         Self {
             terms: terms,
@@ -456,6 +469,7 @@ impl SparseBuilderIndex {
             } else {
                 Box::new(MmapBuffer::new(path))
             },
+            _phantom: std::marker::PhantomData,
         }
     }
 }
@@ -466,22 +480,70 @@ impl SparseBuilderIndex {
 ///
 /// * `path` - Directory containing `information.cbor` and `postings.dat`
 /// * `in_memory` - If `true`, loads postings into memory; otherwise uses mmap
-pub fn load_forward_index(path: &Path, in_memory: bool) -> SparseBuilderIndex {
+pub fn load_forward_index<V: PostingValue>(path: &Path, in_memory: bool) -> SparseBuilderIndex<V> {
     let info_path = path.join(format!("information.cbor"));
     let info_file = File::options()
         .read(true)
         .open(info_path)
         .expect("Error while creating file");
 
-    let ti: IndexInformation =
-        ciborium::de::from_reader(info_file).expect("Error loading term index information");
+    // Try to read (ValueType, IndexInformation) first, fall back to just IndexInformation
+    // for backward compatibility with old format
+    let ti: IndexInformation = {
+        let mut buf = Vec::new();
+        let mut file = File::options()
+            .read(true)
+            .open(path.join("information.cbor"))
+            .expect("Error reading info");
+        std::io::Read::read_to_end(&mut file, &mut buf).expect("Error reading info");
+
+        if let Ok((_vtype, info)) =
+            ciborium::de::from_reader::<(ValueType, IndexInformation), _>(&buf[..])
+        {
+            info
+        } else {
+            // Old format: just IndexInformation
+            ciborium::de::from_reader(&buf[..]).expect("Error loading term index information")
+        }
+    };
 
     let postings_path = path.join(format!("postings.dat"));
 
     SparseBuilderIndex::new(ti.terms, &postings_path, in_memory)
 }
 
-pub struct SparseBuilderIndexIterator<'a> {
+/// Loads a forward index from disk with type-erased value type.
+///
+/// Reads the `ValueType` tag from metadata and dispatches to the correct
+/// typed `SparseBuilderIndex<V>`, returning a `Box<dyn SparseIndex>`.
+pub fn load_forward_index_dynamic(path: &Path, in_memory: bool) -> Box<dyn SparseIndex> {
+    let info_path = path.join("information.cbor");
+    let mut buf = Vec::new();
+    let mut file = File::options()
+        .read(true)
+        .open(info_path)
+        .expect("Error reading info");
+    std::io::Read::read_to_end(&mut file, &mut buf).expect("Error reading info");
+
+    // Try new format with ValueType tag
+    if let Ok((vtype, _info)) =
+        ciborium::de::from_reader::<(ValueType, IndexInformation), _>(&buf[..])
+    {
+        match vtype {
+            ValueType::F32 => Box::new(load_forward_index::<f32>(path, in_memory)),
+            ValueType::F64 => Box::new(load_forward_index::<f64>(path, in_memory)),
+            ValueType::F16 => Box::new(load_forward_index::<half::f16>(path, in_memory)),
+            ValueType::BF16 => Box::new(load_forward_index::<half::bf16>(path, in_memory)),
+            ValueType::I32 => Box::new(load_forward_index::<i32>(path, in_memory)),
+            ValueType::I64 => Box::new(load_forward_index::<i64>(path, in_memory)),
+        }
+    } else {
+        // Old format: assume f32
+        Box::new(load_forward_index::<f32>(path, in_memory))
+    }
+}
+
+pub struct SparseBuilderIndexIterator<'a, V: PostingValue> {
     /// Iterator over page information
     info_iter: Box<std::slice::Iter<'a, TermIndexPageInformation>>,
 
@@ -496,11 +558,11 @@ pub struct SparseBuilderIndexIterator<'a> {
     term_ix: TermIndex,
 
     /// Our sparse index
-    sparse_index: &'a SparseBuilderIndex,
+    sparse_index: &'a SparseBuilderIndex<V>,
 }
 
-impl<'a> SparseBuilderIndexIterator<'a> {
-    fn new<'c: 'a>(index: &'c SparseBuilderIndex, term_ix: TermIndex) -> Self {
+impl<'a, V: PostingValue> SparseBuilderIndexIterator<'a, V> {
+    fn new<'c: 'a>(index: &'c SparseBuilderIndex<V>, term_ix: TermIndex) -> Self {
         let mut iter = if term_ix < index.terms.len() {
             Box::new(index.terms[term_ix].pages.iter())
         } else {
@@ -557,7 +619,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
         None
     }
 
-    const RECORD_SIZE: usize = std::mem::size_of::<DocId>() + std::mem::size_of::<ImpactValue>();
+    const RECORD_SIZE: usize = std::mem::size_of::<DocId>() + V::BYTE_SIZE;
 
     fn read_block(&mut self, info: &TermIndexPageInformation) {
         let start = info.docid_position as usize;
@@ -574,7 +636,7 @@ impl<'a> SparseBuilderIndexIterator<'a> {
     }
 }
 
-impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
+impl<'a, V: PostingValue> Iterator for SparseBuilderIndexIterator<'a, V> {
     type Item = TermImpact;
 
     /// Iterate to the next doc id
@@ -603,13 +665,11 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
             let docid: DocId = slice_ptr
                 .read_u64::<BigEndian>()
                 .expect("Erreur de lecture");
-            let value: ImpactValue = slice_ptr
-                .read_f32::<BigEndian>()
-                .expect("Erreur de lecture");
+            let value = V::read_be(&mut slice_ptr);
             self.index += 1;
             Some(TermImpact {
                 docid: docid,
-                value: value,
+                value: value.to_f32(),
             })
         } else {
             None
@@ -619,8 +679,8 @@ impl<'a> Iterator for SparseBuilderIndexIterator<'a> {
 
 // --- Block index
 
-struct SparseBuilderBlockTermImpactIterator<'a> {
-    iterator: RefCell<SparseBuilderIndexIterator<'a>>,
+struct SparseBuilderBlockTermImpactIterator<'a, V: PostingValue> {
+    iterator: RefCell<SparseBuilderIndexIterator<'a, V>>,
     current_min_docid: Option<DocId>,
     // We need a RefCell for method current()
     current_value: RefCell<Option<TermImpact>>,
@@ -629,8 +689,8 @@ struct SparseBuilderBlockTermImpactIterator<'a> {
     length: usize,
 }
 
-impl<'a> SparseBuilderBlockTermImpactIterator<'a> {
-    fn new(index: &'a SparseBuilderIndex, term_ix: TermIndex) -> Self {
+impl<'a, V: PostingValue> SparseBuilderBlockTermImpactIterator<'a, V> {
+    fn new(index: &'a SparseBuilderIndex<V>, term_ix: TermIndex) -> Self {
         let info = &index.terms[term_ix];
         Self {
             iterator: RefCell::new(SparseBuilderIndexIterator::new(index, term_ix)),
@@ -643,7 +703,7 @@ impl<'a> SparseBuilderBlockTermImpactIterator<'a> {
     }
 }
 
-impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
+impl<'a, V: PostingValue> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a, V> {
     fn next_min_doc_id(&mut self, min_doc_id: DocId) -> Option<DocId> {
         // Sets the current minimum document ID
         self.current_min_docid = Some(min_doc_id.max(
@@ -737,14 +797,6 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
             .max_doc_id
     }
 
-    // fn min_block_doc_id(&self) -> DocId {
-    //     self.iterator
-    //         .borrow()
-    //         .info
-    //         .expect("Iterator was over")
-    //         .min_doc_id
-    // }
-
     fn max_block_value(&self) -> ImpactValue {
         self.iterator
             .borrow()
@@ -762,7 +814,7 @@ impl<'a> BlockTermImpactIterator for SparseBuilderBlockTermImpactIterator<'a> {
     }
 }
 
-impl SparseIndex for SparseBuilderIndex {
+impl<V: PostingValue> SparseIndex for SparseBuilderIndex<V> {
     fn block_iterator(&'_ self, term_ix: TermIndex) -> Box<dyn BlockTermImpactIterator + '_> {
         Box::new(SparseBuilderBlockTermImpactIterator::new(self, term_ix))
     }
@@ -776,13 +828,13 @@ impl SparseIndex for SparseBuilderIndex {
     }
 }
 
-impl SparseIndexInformation for SparseBuilderIndex {
+impl<V: PostingValue> SparseIndexInformation for SparseBuilderIndex<V> {
     fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue) {
         return (0., self.terms[term_ix].max_value);
     }
 }
 
-impl Len for SparseBuilderIndex {
+impl<V: PostingValue> Len for SparseBuilderIndex<V> {
     fn len(&self) -> usize {
         return self.terms.len();
     }

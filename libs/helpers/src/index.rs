@@ -16,7 +16,7 @@ pub struct TestIndex {
     pub dir: TempDir,
     pub vocabulary_size: usize,
     pub all_terms: HashMap<TermIndex, Vec<TermImpact>>,
-    pub indexer: Indexer,
+    pub indexer: Indexer<f32>,
     pub documents: Vec<TestDocument>,
 }
 

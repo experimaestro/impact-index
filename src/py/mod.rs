@@ -25,7 +25,7 @@ use bmp::query::MAX_TERM_WEIGHT;
 use bmp::search::b_search_verbose;
 
 use crate::base::load_index;
-use crate::base::{DocId, ImpactValue, TermIndex};
+use crate::base::{DocId, ImpactValue, PostingValue, TermIndex};
 use crate::index::SparseIndex;
 use crate::search::maxscore::{search_maxscore, MaxScoreOptions};
 use crate::transforms::IndexTransform;
@@ -34,7 +34,7 @@ use crate::{
     search::wand::search_wand,
 };
 
-use numpy::PyArray1;
+use numpy::{PyArray1, PyArrayDyn};
 
 /// A single term impact: a (document ID, impact value) pair.
 #[pyclass(name = "TermImpact")]
@@ -367,6 +367,10 @@ impl PyBuilderOptions {
 
 /// Builds a sparse index from document impact vectors.
 ///
+/// The ``dtype`` parameter controls the on-disk value type:
+/// ``"float32"`` (default), ``"float16"``, ``"bfloat16"``,
+/// ``"float64"``, ``"int32"``, ``"int64"``.
+///
 /// Example::
 ///
 ///     import numpy as np
@@ -379,7 +383,72 @@ impl PyBuilderOptions {
 ///     index = builder.build(in_memory=True)
 #[pyclass(name = "IndexBuilder")]
 pub struct PyIndexBuilder {
-    indexer: Arc<Mutex<SparseIndexer>>,
+    inner: Arc<Mutex<IndexerEnum>>,
+}
+
+/// Type-erased wrapper around generic `Indexer<V>`.
+enum IndexerEnum {
+    F32(SparseIndexer<f32>),
+    F64(SparseIndexer<f64>),
+    F16(SparseIndexer<half::f16>),
+    BF16(SparseIndexer<half::bf16>),
+    I32(SparseIndexer<i32>),
+    I64(SparseIndexer<i64>),
+}
+
+/// Helper to add a document with f32 values to a typed indexer,
+/// converting from f32 to V on the fly.
+fn add_to_indexer<V: PostingValue>(
+    indexer: &mut SparseIndexer<V>,
+    docid: DocId,
+    terms: &PyArray1<TermIndex>,
+    values: &PyArray1<f32>,
+) -> PyResult<()> {
+    let terms_array = unsafe { terms.as_array() };
+    let values_f32 = unsafe { values.as_array() };
+
+    // Convert f32 values to target type V
+    let converted: Vec<V> = values_f32
+        .iter()
+        .map(|&v| {
+            // Use serde to convert f32 -> V via f64 intermediary
+            // This works for all numeric types
+            let v64 = v as f64;
+            // For each type, we need a conversion from f64
+            convert_f64_to_posting_value::<V>(v64)
+        })
+        .collect();
+    let values_array = ndarray::Array::from_vec(converted);
+    indexer.add(docid, &terms_array, &values_array)?;
+    Ok(())
+}
+
+/// Convert an f64 to a PostingValue type.
+fn convert_f64_to_posting_value<V: PostingValue>(v: f64) -> V {
+    use std::any::TypeId;
+    let id = TypeId::of::<V>();
+    unsafe {
+        if id == TypeId::of::<f32>() {
+            let val = v as f32;
+            *(&val as *const f32 as *const V)
+        } else if id == TypeId::of::<f64>() {
+            *(&v as *const f64 as *const V)
+        } else if id == TypeId::of::<half::f16>() {
+            let val = half::f16::from_f64(v);
+            *(&val as *const half::f16 as *const V)
+        } else if id == TypeId::of::<half::bf16>() {
+            let val = half::bf16::from_f64(v);
+            *(&val as *const half::bf16 as *const V)
+        } else if id == TypeId::of::<i32>() {
+            let val = v as i32;
+            *(&val as *const i32 as *const V)
+        } else if id == TypeId::of::<i64>() {
+            let val = v as i64;
+            *(&val as *const i64 as *const V)
+        } else {
+            panic!("Unknown PostingValue type")
+        }
+    }
 }
 
 unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'static> {
@@ -393,19 +462,61 @@ impl PyIndexBuilder {
     /// Args:
     ///     folder: Directory where the index files will be written
     ///     options: Optional BuilderOptions for checkpointing and memory control
+    ///     dtype: Value type for storage. Accepts string names ("float32",
+    ///         "float16", "bfloat16", "float64", "int32", "int64") or
+    ///         numpy dtype objects (e.g., ``np.float32``, ``np.float16``).
+    ///         Default is "float32".
     #[new]
-    fn new(folder: &str, options: Option<&PyBuilderOptions>) -> Self {
+    #[pyo3(signature = (folder, options=None, dtype=None))]
+    fn new(
+        folder: &str,
+        options: Option<&PyBuilderOptions>,
+        dtype: Option<&PyAny>,
+    ) -> PyResult<Self> {
         let builder_options = match &options {
-            Some(_options) => &_options.0,
-            None => &BuilderOptions::default(),
+            Some(_options) => _options.0.clone(),
+            None => BuilderOptions::default(),
         };
 
-        PyIndexBuilder {
-            indexer: Arc::new(Mutex::new(SparseIndexer::new(
-                Path::new(folder),
-                builder_options,
-            ))),
-        }
+        // Resolve the dtype to a string name
+        let dtype_str: String = match dtype {
+            None => "float32".to_string(),
+            Some(obj) => {
+                // Try extracting as string first
+                if let Ok(s) = obj.extract::<String>() {
+                    s
+                } else {
+                    // Try treating as numpy dtype (has a .name attribute)
+                    match obj.getattr("name") {
+                        Ok(name) => name.extract::<String>()?,
+                        Err(_) => {
+                            // Try str() representation
+                            obj.str()?.extract::<String>()?
+                        }
+                    }
+                }
+            }
+        };
+
+        let path = Path::new(folder);
+        let inner = match dtype_str.as_str() {
+            "float32" | "f32" => IndexerEnum::F32(SparseIndexer::new(path, &builder_options)),
+            "float64" | "f64" => IndexerEnum::F64(SparseIndexer::new(path, &builder_options)),
+            "float16" | "f16" => IndexerEnum::F16(SparseIndexer::new(path, &builder_options)),
+            "bfloat16" | "bf16" => IndexerEnum::BF16(SparseIndexer::new(path, &builder_options)),
+            "int32" | "i32" => IndexerEnum::I32(SparseIndexer::new(path, &builder_options)),
+            "int64" | "i64" => IndexerEnum::I64(SparseIndexer::new(path, &builder_options)),
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown dtype '{}', expected one of: float32, float64, float16, bfloat16, int32, int64",
+                    other
+                )));
+            }
+        };
+
+        Ok(PyIndexBuilder {
+            inner: Arc::new(Mutex::new(inner)),
+        })
     }
 
     /// Add a document to the index.
@@ -413,24 +524,39 @@ impl PyIndexBuilder {
     /// Args:
     ///     docid: Unique document identifier (must be strictly increasing)
     ///     terms: numpy array of term indices (dtype=uintp)
-    ///     values: numpy array of impact values (dtype=float32, must be > 0)
-    fn add(
-        &mut self,
-        docid: DocId,
-        terms: &PyArray1<TermIndex>,
-        values: &PyArray1<ImpactValue>,
-    ) -> PyResult<()> {
-        let mut indexer = self.indexer.blocking_lock();
-        let terms_array = unsafe { terms.as_array() };
-        let values_array = unsafe { values.as_array() };
-        indexer.add(docid, &terms_array, &values_array)?;
-        Ok(())
+    ///     values: numpy array of impact values (any numeric dtype, must be > 0).
+    ///         Values are converted to the builder's dtype automatically.
+    fn add(&mut self, docid: DocId, terms: &PyArray1<TermIndex>, values: &PyAny) -> PyResult<()> {
+        // Convert any numeric numpy array to f32 for uniform handling
+        let py = values.py();
+        let np = py.import("numpy")?;
+        let values_f32: &PyArray1<f32> = np
+            .call_method1("asarray", (values,))?
+            .call_method1("astype", ("float32",))?
+            .extract()?;
+
+        let mut inner = self.inner.blocking_lock();
+        match &mut *inner {
+            IndexerEnum::F32(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::F64(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::F16(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::BF16(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::I32(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::I64(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+        }
     }
 
     /// Returns the document ID from the last checkpoint, or None if no checkpoint exists.
     fn get_checkpoint_doc_id(&self) -> Option<DocId> {
-        let indexer = self.indexer.blocking_lock();
-        indexer.get_checkpoint_doc_id()
+        let inner = self.inner.blocking_lock();
+        match &*inner {
+            IndexerEnum::F32(indexer) => indexer.get_checkpoint_doc_id(),
+            IndexerEnum::F64(indexer) => indexer.get_checkpoint_doc_id(),
+            IndexerEnum::F16(indexer) => indexer.get_checkpoint_doc_id(),
+            IndexerEnum::BF16(indexer) => indexer.get_checkpoint_doc_id(),
+            IndexerEnum::I32(indexer) => indexer.get_checkpoint_doc_id(),
+            IndexerEnum::I64(indexer) => indexer.get_checkpoint_doc_id(),
+        }
     }
 
     /// Finalize the index and return a searchable Index.
@@ -441,16 +567,28 @@ impl PyIndexBuilder {
     /// Returns:
     ///     An Index instance ready for searching
     fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
-        let mut indexer = self.indexer.blocking_lock();
-        indexer.build().expect("Error while building index");
+        let mut inner = self.inner.blocking_lock();
 
-        let base = PyClassInitializer::from(PyIndexView {});
-        let index = indexer.to_index(in_memory);
-        let sub = base.add_subclass(PySparseIndex {
-            index: Arc::new(Box::new(index)),
-        });
+        macro_rules! build_index {
+            ($indexer:expr) => {{
+                $indexer.build().expect("Error while building index");
+                let base = PyClassInitializer::from(PyIndexView {});
+                let index = $indexer.to_index(in_memory);
+                let sub = base.add_subclass(PySparseIndex {
+                    index: Arc::new(Box::new(index)),
+                });
+                Ok(Py::new(py, sub)?.to_object(py))
+            }};
+        }
 
-        Ok(Py::new(py, sub)?.to_object(py))
+        match &mut *inner {
+            IndexerEnum::F32(indexer) => build_index!(indexer),
+            IndexerEnum::F64(indexer) => build_index!(indexer),
+            IndexerEnum::F16(indexer) => build_index!(indexer),
+            IndexerEnum::BF16(indexer) => build_index!(indexer),
+            IndexerEnum::I32(indexer) => build_index!(indexer),
+            IndexerEnum::I64(indexer) => build_index!(indexer),
+        }
     }
 }
 
