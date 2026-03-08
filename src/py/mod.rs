@@ -17,6 +17,7 @@ use crate::builder::BuilderOptions;
 use crate::compress;
 use crate::compress::docid::EliasFanoCompressor;
 use crate::compress::CompressionTransform;
+use crate::docstore;
 use crate::transforms::split::SplitIndexTransform;
 
 use bmp::index::posting_list::PostingListIterator;
@@ -561,6 +562,180 @@ impl PyBmpSearcher {
     }
 }
 
+// --- DocumentStore Python bindings ---
+
+#[pyclass(name = "Document")]
+pub struct PyDocument {
+    inner: docstore::Document,
+}
+
+#[pymethods]
+impl PyDocument {
+    #[getter]
+    fn keys(&self) -> HashMap<String, String> {
+        self.inner.keys.clone()
+    }
+
+    #[getter]
+    fn content(&self) -> &[u8] {
+        &self.inner.content
+    }
+}
+
+#[pyclass(name = "DocumentStoreBuilder")]
+pub struct PyDocumentStoreBuilder {
+    builder: Option<docstore::builder::DocumentStoreBuilder>,
+}
+
+#[pymethods]
+impl PyDocumentStoreBuilder {
+    #[new]
+    #[pyo3(signature = (folder, block_size=4096, zstd_level=3))]
+    fn new(folder: &str, block_size: usize, zstd_level: i32) -> PyResult<Self> {
+        let builder =
+            docstore::builder::DocumentStoreBuilder::new(Path::new(folder), block_size, zstd_level)
+                .map_err(|e| {
+                    pyo3::exceptions::PyIOError::new_err(format!(
+                        "Failed to create DocumentStoreBuilder: {}",
+                        e
+                    ))
+                })?;
+        Ok(Self {
+            builder: Some(builder),
+        })
+    }
+
+    fn add(&mut self, keys: HashMap<String, String>, content: &[u8]) -> PyResult<()> {
+        let doc = docstore::Document {
+            keys,
+            content: content.to_vec(),
+        };
+        self.builder
+            .as_mut()
+            .ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+            })?
+            .add(&doc)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))
+    }
+
+    fn build(&mut self) -> PyResult<()> {
+        let builder = self.builder.take().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+        })?;
+        builder
+            .build()
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))
+    }
+}
+
+#[pyclass(name = "DocumentStore")]
+pub struct PyDocumentStore {
+    store: Arc<docstore::store::DocumentStore>,
+}
+
+#[pymethods]
+impl PyDocumentStore {
+    #[staticmethod]
+    #[pyo3(signature = (folder, content_access="memory"))]
+    fn load(folder: &str, content_access: &str) -> PyResult<Self> {
+        let access = match content_access {
+            "memory" => docstore::store::ContentAccess::Memory,
+            "mmap" => docstore::store::ContentAccess::Mmap,
+            "disk" => docstore::store::ContentAccess::Disk,
+            other => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown content_access '{}', expected 'memory', 'mmap', or 'disk'",
+                    other
+                )));
+            }
+        };
+        let store = docstore::store::DocumentStore::load(Path::new(folder), access)
+            .map_err(|e| pyo3::exceptions::PyIOError::new_err(format!("{}", e)))?;
+        Ok(Self {
+            store: Arc::new(store),
+        })
+    }
+
+    fn num_documents(&self) -> u64 {
+        self.store.num_documents()
+    }
+
+    fn key_names(&self) -> Vec<String> {
+        self.store.key_names().to_vec()
+    }
+
+    fn get_by_number(&self, doc_numbers: Vec<u64>) -> PyResult<Vec<PyDocument>> {
+        let docs = self
+            .store
+            .get_by_number(&doc_numbers)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?;
+        Ok(docs.into_iter().map(|d| PyDocument { inner: d }).collect())
+    }
+
+    fn get_by_key(
+        &self,
+        key_name: &str,
+        key_values: Vec<String>,
+    ) -> PyResult<Vec<Option<PyDocument>>> {
+        let refs: Vec<&str> = key_values.iter().map(|s| s.as_str()).collect();
+        let docs = self
+            .store
+            .get_by_key(key_name, &refs)
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?;
+        Ok(docs
+            .into_iter()
+            .map(|opt| opt.map(|d| PyDocument { inner: d }))
+            .collect())
+    }
+
+    fn aio_get_by_number<'a>(&self, py: Python<'a>, doc_numbers: Vec<u64>) -> PyResult<&'a PyAny> {
+        let store = self.store.clone();
+        let fut = async move {
+            let docs = task::spawn_blocking(move || {
+                store.get_by_number(&doc_numbers).map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+            Ok(Python::with_gil(|py| {
+                let v: Vec<PyDocument> =
+                    docs.into_iter().map(|d| PyDocument { inner: d }).collect();
+                v.into_py(py)
+            }))
+        };
+        pyo3_asyncio::tokio::future_into_py(py, fut)
+    }
+
+    fn aio_get_by_key<'a>(
+        &self,
+        py: Python<'a>,
+        key_name: String,
+        key_values: Vec<String>,
+    ) -> PyResult<&'a PyAny> {
+        let store = self.store.clone();
+        let fut = async move {
+            let docs = task::spawn_blocking(move || {
+                let refs: Vec<&str> = key_values.iter().map(|s| s.as_str()).collect();
+                store
+                    .get_by_key(&key_name, &refs)
+                    .map_err(|e| e.to_string())
+            })
+            .await
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?
+            .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
+            Ok(Python::with_gil(|py| {
+                let v: Vec<Option<PyDocument>> = docs
+                    .into_iter()
+                    .map(|opt| opt.map(|d| PyDocument { inner: d }))
+                    .collect();
+                v.into_py(py)
+            }))
+        };
+        pyo3_asyncio::tokio::future_into_py(py, fut)
+    }
+}
+
 /// A Python module implemented in Rust.
 #[pymodule]
 fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
@@ -579,6 +754,10 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     module.add_class::<PyCompressionTransform>()?;
     module.add_class::<PySplitIndexTransform>()?;
     module.add_class::<PyBmpSearcher>()?;
+
+    module.add_class::<PyDocument>()?;
+    module.add_class::<PyDocumentStoreBuilder>()?;
+    module.add_class::<PyDocumentStore>()?;
 
     Ok(())
 }

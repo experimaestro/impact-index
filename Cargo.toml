@@ -23,6 +23,9 @@ harness = false
 [[test]]
 name = "index"
 
+[[test]]
+name = "docstore"
+
 [dependencies]
 pyo3 = { version = "0.20.3", features = ["extension-module", "abi3-py38"] }
 pyo3-asyncio = { version = "0.20.0", features = ["attributes", "tokio-runtime"] }
