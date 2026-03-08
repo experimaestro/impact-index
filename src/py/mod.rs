@@ -113,13 +113,15 @@ pub struct PyIndexView {}
 /// Use ``Index.load(folder, in_memory)`` to load an existing index,
 /// or build one with ``IndexBuilder``.
 ///
-/// Example::
+/// Example:
 ///
-///     import impact_index
-///     index = impact_index.Index.load("/path/to/index", in_memory=True)
-///     results = index.search_wand({42: 1.5, 100: 0.8}, top_k=10)
-///     for doc in results:
-///         print(doc.docid, doc.score)
+/// ```python,ignore
+/// import impact_index
+/// index = impact_index.Index.load("/path/to/index", in_memory=True)
+/// results = index.search_wand({42: 1.5, 100: 0.8}, top_k=10)
+/// for doc in results:
+///     print(doc.docid, doc.score)
+/// ```
 #[pyclass(name = "Index", extends=PyIndexView)]
 pub struct PySparseIndex {
     index: Arc<Box<dyn SparseIndex>>,
@@ -371,16 +373,18 @@ impl PyBuilderOptions {
 /// ``"float32"`` (default), ``"float16"``, ``"bfloat16"``,
 /// ``"float64"``, ``"int32"``, ``"int64"``.
 ///
-/// Example::
+/// Example:
 ///
-///     import numpy as np
-///     import impact_index
+/// ```python,ignore
+/// import numpy as np
+/// import impact_index
 ///
-///     builder = impact_index.IndexBuilder("/path/to/index")
-///     terms = np.array([0, 5, 42], dtype=np.uintp)
-///     values = np.array([1.2, 0.5, 3.1], dtype=np.float32)
-///     builder.add(0, terms, values)
-///     index = builder.build(in_memory=True)
+/// builder = impact_index.IndexBuilder("/path/to/index")
+/// terms = np.array([0, 5, 42], dtype=np.uintp)
+/// values = np.array([1.2, 0.5, 3.1], dtype=np.float32)
+/// builder.add(0, terms, values)
+/// index = builder.build(in_memory=True)
+/// ```
 #[pyclass(name = "IndexBuilder")]
 pub struct PyIndexBuilder {
     inner: Arc<Mutex<IndexerEnum>>,
@@ -729,14 +733,16 @@ impl PyTransformFactory for PyCompressionTransformFactory {
 ///     doc_ids_compressor: A DocIdCompressor (e.g., EliasFanoCompressor)
 ///     impacts_compressor: An ImpactCompressor (e.g., ImpactQuantizer)
 ///
-/// Example::
+/// Example:
 ///
-///     transform = impact_index.CompressionTransform(
-///         max_block_size=128,
-///         doc_ids_compressor=impact_index.EliasFanoCompressor(),
-///         impacts_compressor=impact_index.GlobalImpactQuantizer(nbits=8),
-///     )
-///     transform.process("/path/to/compressed", index)
+/// ```python,ignore
+/// transform = impact_index.CompressionTransform(
+///     max_block_size=128,
+///     doc_ids_compressor=impact_index.EliasFanoCompressor(),
+///     impacts_compressor=impact_index.GlobalImpactQuantizer(nbits=8),
+/// )
+/// transform.process("/path/to/compressed", index)
+/// ```
 #[pyclass(extends=PyTransform, name="CompressionTransform")]
 pub struct PyCompressionTransform {}
 
@@ -904,11 +910,13 @@ impl PyDocument {
 ///     block_size: Number of documents per compressed block (default: 4096)
 ///     zstd_level: Zstandard compression level (default: 3)
 ///
-/// Example::
+/// Example:
 ///
-///     builder = impact_index.DocumentStoreBuilder("/path/to/store")
-///     builder.add({"docno": "DOC001"}, b"document text here")
-///     builder.build()
+/// ```python,ignore
+/// builder = impact_index.DocumentStoreBuilder("/path/to/store")
+/// builder.add({"docno": "DOC001"}, b"document text here")
+/// builder.build()
+/// ```
 #[pyclass(name = "DocumentStoreBuilder")]
 pub struct PyDocumentStoreBuilder {
     builder: Option<docstore::builder::DocumentStoreBuilder>,
@@ -970,12 +978,14 @@ impl PyDocumentStoreBuilder {
 /// using ``get_by_number()`` or ``get_by_key()``. Async variants
 /// (``aio_get_by_number``, ``aio_get_by_key``) are also available.
 ///
-/// Example::
+/// Example:
 ///
-///     store = impact_index.DocumentStore.load("/path/to/store")
-///     docs = store.get_by_number([0, 1, 2])
-///     for doc in docs:
-///         print(doc.keys, doc.content)
+/// ```python,ignore
+/// store = impact_index.DocumentStore.load("/path/to/store")
+/// docs = store.get_by_number([0, 1, 2])
+/// for doc in docs:
+///     print(doc.keys, doc.content)
+/// ```
 #[pyclass(name = "DocumentStore")]
 pub struct PyDocumentStore {
     store: Arc<docstore::store::DocumentStore>,
