@@ -13,7 +13,7 @@ extensions = [
 
 # -- AutoAPI configuration (reads .pyi stubs without importing the module) --
 autoapi_type = "python"
-autoapi_dirs = ["../python"]  # python/ directory, where impact_index.pyi lives
+autoapi_dirs = [".."]  # parent (python/), where impact_index.pyi lives
 autoapi_file_patterns = ["*.pyi"]
 autoapi_generate_api_docs = True
 autoapi_options = [
