@@ -1,3 +1,10 @@
+//! Index construction from document impact vectors.
+//!
+//! Provides [`Indexer`] for building a forward index on disk, with optional
+//! checkpointing for crash recovery during long indexing runs. Once built,
+//! the index can be loaded as a [`SparseBuilderIndex`] for searching or
+//! further transformation (compression, splitting).
+
 use std::{
     cell::RefCell,
     fs::{self, File},
@@ -29,23 +36,27 @@ use crate::{
 *
 */
 
+/// Configuration options for the [`Indexer`].
 #[derive(Derivative, Clone)]
 #[derivative(Default)]
 pub struct BuilderOptions {
-    /// Build a checkpoint every X documents
-    /// (0 means no check-pointing)
+    /// Build a checkpoint every N documents (0 disables checkpointing).
+    ///
+    /// Checkpoints allow resuming indexing after a crash by persisting
+    /// the current state to disk periodically.
     #[derivative(Default(value = "0"))]
     pub checkpoint_frequency: DocId,
 
-    // Maximum number of postings For a term, 16 * 1024 postings by
-    // default, that is roughly 4Gb of max. memory in total
-    // with a vocabulary of 32k tokens
+    /// Maximum number of in-memory postings per term before flushing to disk.
+    ///
+    /// Default is 16384. With a 32k vocabulary, this uses roughly 4 GB of memory.
     #[derivative(Default(value = "16384"))]
     pub in_memory_threshold: usize,
 
-    /// Ratio of in_memory_threshold to use as flush threshold during checkpoint
-    /// Posting lists with length >= in_memory_threshold * checkpoint_flush_ratio
-    /// will be flushed to disk before checkpointing to reduce checkpoint size
+    /// Ratio of `in_memory_threshold` used as flush threshold during checkpoints.
+    ///
+    /// Posting lists with length >= `in_memory_threshold * checkpoint_flush_ratio`
+    /// will be flushed to disk before checkpointing to reduce checkpoint size.
     #[derivative(Default(value = "0.5"))]
     pub checkpoint_flush_ratio: f64,
 }
@@ -301,8 +312,12 @@ impl TermsImpacts {
     }
 }
 
-/// The indexer consumes documents and
-/// build a temporary structure
+/// Builds a sparse index from document impact vectors.
+///
+/// Documents are added one at a time via [`add`](Indexer::add). Once all
+/// documents have been added, call [`build`](Indexer::build) to finalize
+/// the on-disk structure, then [`to_index`](Indexer::to_index) to obtain
+/// a searchable index.
 pub struct Indexer {
     impacts: TermsImpacts,
     folder: PathBuf,
@@ -310,6 +325,7 @@ pub struct Indexer {
 }
 
 impl Indexer {
+    /// Creates a new indexer writing to the given directory.
     pub fn new(folder: &Path, options: &BuilderOptions) -> Indexer {
         Indexer {
             impacts: TermsImpacts::new(folder, options),
@@ -318,10 +334,24 @@ impl Indexer {
         }
     }
 
+    /// Returns the document ID from the last checkpoint, or `None` if
+    /// no checkpoint exists. Useful to resume indexing after a crash.
     pub fn get_checkpoint_doc_id(&self) -> Option<DocId> {
         self.impacts.checkpoint_doc_id
     }
 
+    /// Adds a document's sparse impact vector to the index.
+    ///
+    /// # Arguments
+    ///
+    /// * `docid` - Unique document identifier (must be strictly increasing)
+    /// * `terms` - Array of term indices with non-zero impacts
+    /// * `values` - Array of corresponding impact values (must be > 0)
+    ///
+    /// # Panics
+    ///
+    /// Panics if `terms` and `values` have different lengths, or if the index
+    /// has already been built.
     pub fn add<S, T>(
         &mut self,
         docid: DocId,
@@ -357,7 +387,10 @@ impl Indexer {
         Ok(())
     }
 
-    // Closes the index structures and finishes the on-disk serialization
+    /// Finalizes the index, flushing all remaining postings to disk.
+    ///
+    /// Must be called before [`to_index`](Indexer::to_index). Calling this
+    /// multiple times is safe (subsequent calls are no-ops).
     pub fn build(&mut self) -> BoxResult<()> {
         if !self.built {
             // Flush the last impacts
@@ -402,8 +435,10 @@ impl Indexer {
     }
 }
 
-/// The forward index is the raw structure built while
-/// constructing the index
+/// The raw forward index structure created during index construction.
+///
+/// Supports searching via block-based iteration. Typically used as an
+/// intermediate step before applying compression or splitting transforms.
 pub struct SparseBuilderIndex {
     /// Term information
     terms: Vec<TermIndexInformation>,
@@ -425,6 +460,12 @@ impl SparseBuilderIndex {
     }
 }
 
+/// Loads a forward index from disk.
+///
+/// # Arguments
+///
+/// * `path` - Directory containing `information.cbor` and `postings.dat`
+/// * `in_memory` - If `true`, loads postings into memory; otherwise uses mmap
 pub fn load_forward_index(path: &Path, in_memory: bool) -> SparseBuilderIndex {
     let info_path = path.join(format!("information.cbor"));
     let info_file = File::options()

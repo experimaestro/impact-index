@@ -1,4 +1,9 @@
-//! MaxScore algorithm
+//! MaxScore algorithm for efficient top-k retrieval.
+//!
+//! Based on Algorithm 1 in "Accelerating Learned Sparse Indexes Via Term Impact
+//! Decomposition" (Mackenzie et al., 2022). The algorithm partitions term iterators
+//! into active and passive sets based on their maximum contribution to skip
+//! unnecessary score computations.
 
 use std::collections::HashMap;
 
@@ -61,17 +66,27 @@ impl MaxScoreTermIterator<'_> {
     }
 }
 
+/// Options for the MaxScore search algorithm.
 #[derive(Derivative)]
 #[derivative(Default)]
 pub struct MaxScoreOptions {
+    /// If `true`, orders term iterators by posting list length (increasing),
+    /// so the longest lists become passive first. If `false`, orders by
+    /// max impact value (decreasing).
     #[derivative(Default(value = "true"))]
     pub length_based_ordering: bool,
 }
 
-/*
- * Search using the MaxScore algorithm
- * (algorithm 1 in Accelerating Learned Sparse Indexes Via Term Impact Decomposition, Mackenzie et al., 2022)
- */
+/// Searches the index using the MaxScore algorithm.
+///
+/// Returns the top-k documents by score for the given query.
+///
+/// # Arguments
+///
+/// * `index` - The sparse index to search
+/// * `query` - Map from term index to query weight
+/// * `top_k` - Number of top documents to return
+/// * `options` - Algorithm configuration
 pub fn search_maxscore<'a>(
     index: &'a dyn SparseIndex,
     query: &HashMap<TermIndex, ImpactValue>,

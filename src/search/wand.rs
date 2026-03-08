@@ -139,9 +139,15 @@ impl<'a> WandSearch<'a> {
     }
 }
 
-/**
- * Search using the WAND algorithmw
- */
+/// Searches the index using the WAND (Weak AND) algorithm.
+///
+/// Returns the top-k documents by score for the given query.
+///
+/// # Arguments
+///
+/// * `index` - The sparse index to search
+/// * `query` - Map from term index to query weight
+/// * `top_k` - Number of top documents to return
 pub fn search_wand<'a>(
     index: &'a dyn SparseIndex,
     query: &HashMap<TermIndex, ImpactValue>,

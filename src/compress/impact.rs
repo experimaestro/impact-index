@@ -1,4 +1,8 @@
-//! Methods for compressing impact values
+//! Compression schemes for impact values.
+//!
+//! - [`Quantizer`]: Fixed-range uniform quantization to N bits
+//! - [`GlobalQuantizerFactory`]: Auto-ranging quantizer using global min/max
+//! - [`Identity`]: No compression (stores raw f32 values)
 
 use core::f32;
 use std::io::Write;
@@ -17,17 +21,25 @@ use serde::{Deserialize, Serialize};
 // --- Quantizer
 // ---
 
+/// Uniform quantizer that maps floating-point impact values to N-bit integers.
+///
+/// Values are linearly mapped from `[min, max]` into `2^nbits` levels.
 #[derive(Serialize, Deserialize, Clone, Copy)]
-
 pub struct Quantizer {
+    /// Number of bits per quantized value.
     pub nbits: u32,
+    /// Number of quantization levels (`2^nbits`).
     pub levels: u32,
+    /// Quantization step size.
     pub step: ImpactValue,
+    /// Minimum value of the quantization range.
     pub min: ImpactValue,
+    /// Maximum value of the quantization range.
     pub max: ImpactValue,
 }
 
 impl Quantizer {
+    /// Creates a quantizer with the given bit width and value range.
     pub fn new(nbits: u32, min: ImpactValue, max: ImpactValue) -> Self {
         let levels = 2 << (nbits - 1);
         Self {
@@ -40,9 +52,10 @@ impl Quantizer {
     }
 }
 
+/// Factory that creates a [`Quantizer`] with min/max determined from the index.
 #[derive(Clone)]
-
 pub struct GlobalQuantizerFactory {
+    /// Number of bits for quantization.
     pub nbits: u32,
 }
 
@@ -155,6 +168,7 @@ impl<'a> Compressor<ImpactValue> for Quantizer {
 // --- Identity transform
 // ---
 
+/// Identity compressor that stores impact values as raw f32 (no compression).
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct Identity {}
 

@@ -1,4 +1,8 @@
-//! Splits an index for a term
+//! Splits posting lists by impact value quantiles.
+//!
+//! Given quantiles (e.g., `[0.9]`), each term's postings are partitioned into
+//! ranges (e.g., low 90% and top 10% by impact value). This enables the
+//! MaxScore algorithm to skip low-impact postings more aggressively.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
@@ -18,8 +22,15 @@ use crate::{
 
 use serde::{Deserialize, Serialize};
 
+/// Splits each term's posting list by impact value quantiles, then delegates
+/// to a downstream [`IndexTransform`] (typically compression).
+///
+/// For example, with `quantiles = [0.9]`, each term gets two sub-lists:
+/// one with the bottom 90% of impacts and one with the top 10%.
 pub struct SplitIndexTransform {
+    /// The downstream transform applied to the split index.
     pub sink: Box<dyn IndexTransform>,
+    /// Quantile boundaries for splitting (values in `[0, 1]`).
     pub quantiles: Vec<f64>,
 }
 

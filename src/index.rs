@@ -1,4 +1,10 @@
-//! Main data structure used to describe an index
+//! Core index traits and data structures.
+//!
+//! Defines the main abstractions for sparse indices:
+//! - [`SparseIndex`]: The primary trait for searchable indices with block-based iteration
+//! - [`BlockTermImpactIterator`]: Block-level iterator over term postings
+//! - [`SparseIndexView`]: Simplified iterator-based view for transforms
+//! - [`SparseIndexInformation`]: Access to per-term statistics
 
 use std::fmt;
 use std::fs::File;
@@ -15,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::base::TermImpact;
 
+/// Metadata for a single page (block) within a term's posting list.
 #[derive(Serialize, Deserialize)]
 pub struct TermIndexPageInformation {
     /// Position for the document ID stream
@@ -58,11 +65,16 @@ impl std::fmt::Display for TermIndexPageInformation {
     }
 }
 
+/// Aggregate metadata for a single term's posting list across all pages.
 #[derive(Serialize, Deserialize)]
 pub struct TermIndexInformation {
+    /// Block-level metadata for each page in the posting list.
     pub pages: Vec<TermIndexPageInformation>,
+    /// Maximum impact value across all postings for this term.
     pub max_value: ImpactValue,
+    /// Maximum document ID in the posting list.
     pub max_doc_id: DocId,
+    /// Total number of postings for this term.
     pub length: usize,
 }
 
@@ -79,12 +91,13 @@ impl IndexInformation {
     }
 }
 
+/// Provides per-term statistics (e.g., value range).
 pub trait SparseIndexInformation: Len {
-    /// Get maximum impact value for a term
+    /// Returns the (min, max) impact value range for the given term.
     fn value_range(&self, term_ix: TermIndex) -> (ImpactValue, ImpactValue);
 }
 
-/// A very simple
+/// A simple, sequential view over an index for use in transforms and exports.
 pub trait SparseIndexView: Send + Sync + SparseIndexInformation {
     /// Basic iterator
     fn iterator<'a>(&'a self, term_ix: TermIndex) -> Box<dyn Iterator<Item = TermImpact> + 'a>;
@@ -380,6 +393,7 @@ where
     }
 }
 
+/// Iterator that yields only the impact values (discarding document IDs).
 pub struct ValueIterator<'a> {
     iterator: Box<dyn BlockTermImpactIterator + 'a>,
 }

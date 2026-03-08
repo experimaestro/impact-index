@@ -1,4 +1,12 @@
-//! Methods for compressing the posting lists
+//! Compression of posting lists (document IDs and impact values).
+//!
+//! Provides a trait-based compression framework with pluggable compressors:
+//! - [`docid::EliasFanoCompressor`]: Elias-Fano encoding for document IDs
+//! - [`impact::Quantizer`]: Fixed-range quantization for impact values
+//! - [`impact::GlobalQuantizerFactory`]: Auto-ranging quantizer based on global statistics
+//!
+//! The [`CompressionTransform`] applies compression to a raw forward index,
+//! producing a block-based compressed index on disk.
 
 use std::{
     cell::RefCell,
@@ -70,7 +78,9 @@ impl std::fmt::Display for TermBlockInformation {
 // ---- Compression ---
 //
 
+/// Trait for encoding/decoding a sequence of values within a block.
 pub trait Compressor<T>: Sync + Send {
+    /// Writes compressed values to the given writer.
     fn write(
         &self,
         writer: &mut dyn Write,
@@ -78,6 +88,7 @@ pub trait Compressor<T>: Sync + Send {
         term_index: TermIndex,
         info: &TermBlockInformation,
     );
+    /// Reads compressed values from a memory slice, returning an iterator.
     fn read<'a>(
         &self,
         slice: Box<dyn Slice + 'a>,
@@ -86,19 +97,29 @@ pub trait Compressor<T>: Sync + Send {
     ) -> Box<dyn Iterator<Item = T> + Send + 'a>;
 }
 
+/// A serializable compressor for document IDs.
 #[typetag::serde(tag = "type")]
 pub trait DocIdCompressor: Compressor<DocId> {}
 
+/// Factory for creating [`DocIdCompressor`] instances, potentially
+/// using global index statistics.
 pub trait DocIdCompressorFactory: Sync + Send {
+    /// Creates a compressor, optionally inspecting the index for statistics.
     fn create(&self, index: &dyn SparseIndexView) -> Box<dyn DocIdCompressor>;
+    /// Clones this factory.
     fn clone(&self) -> Box<dyn DocIdCompressorFactory>;
 }
 
+/// A serializable compressor for impact values.
 #[typetag::serde(tag = "type")]
 pub trait ImpactCompressor: Compressor<ImpactValue> {}
 
+/// Factory for creating [`ImpactCompressor`] instances, potentially
+/// using global index statistics.
 pub trait ImpactCompressorFactory: Sync + Send {
+    /// Creates a compressor, optionally inspecting the index for statistics.
     fn create(&self, index: &dyn SparseIndexView) -> Box<dyn ImpactCompressor>;
+    /// Clones this factory.
     fn clone(&self) -> Box<dyn ImpactCompressorFactory>;
 }
 
@@ -475,14 +496,16 @@ impl Len for CompressedIndex {
     }
 }
 
+/// Transform that compresses a raw forward index into a block-based
+/// compressed index with separate streams for document IDs and impact values.
 pub struct CompressionTransform {
-    #[doc = r"maximum number of records per block"]
+    /// Maximum number of postings per block.
     pub max_block_size: usize,
 
-    #[doc = r"Document ID compressor"]
+    /// Factory for creating the document ID compressor.
     pub doc_ids_compressor_factory: Box<dyn DocIdCompressorFactory>,
 
-    #[doc = r"Impact value compressor"]
+    /// Factory for creating the impact value compressor.
     pub impacts_compressor_factory: Box<dyn ImpactCompressorFactory>,
 }
 

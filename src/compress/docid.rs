@@ -1,4 +1,7 @@
-//! Methods for compressing the document IDs
+//! Elias-Fano encoding for document ID compression.
+//!
+//! Uses the [`sucds`] crate's Elias-Fano implementation for near-optimal
+//! compression of monotonically increasing document ID sequences.
 
 use std::io::Write;
 
@@ -12,6 +15,10 @@ use ouroboros::self_referencing;
 use serde::{Deserialize, Serialize};
 use sucds::{EliasFano, EliasFanoBuilder, Searial};
 
+/// Compresses document IDs using Elias-Fano encoding.
+///
+/// Within each block, document IDs are stored as offsets from the minimum
+/// document ID, achieving near-optimal compression for sorted integer sequences.
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct EliasFanoCompressor {}
 

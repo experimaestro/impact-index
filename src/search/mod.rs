@@ -1,3 +1,9 @@
+//! Search algorithms for sparse index retrieval.
+//!
+//! Provides two main algorithms:
+//! - [`wand::search_wand`]: WAND (Weak AND) algorithm for top-k retrieval
+//! - [`maxscore::search_maxscore`]: MaxScore algorithm with optional term impact decomposition
+
 pub mod maxscore;
 pub mod wand;
 
@@ -5,8 +11,11 @@ use std::{cmp::Ordering, collections::BinaryHeap};
 
 use crate::base::{DocId, ImpactValue};
 
+/// A document with its retrieval score, returned by search algorithms.
 pub struct ScoredDocument {
+    /// The document identifier.
     pub docid: DocId,
+    /// The computed relevance score.
     pub score: ImpactValue,
 }
 
@@ -45,12 +54,14 @@ impl Ord for ScoredDocument {
     }
 }
 
+/// Bounded min-heap that retains only the top-k highest-scoring documents.
 pub struct TopScoredDocuments {
     heap: BinaryHeap<ScoredDocument>,
     top_k: usize,
 }
 
 impl TopScoredDocuments {
+    /// Creates a new heap that will retain at most `top_k` documents.
     pub fn new(top_k: usize) -> Self {
         Self {
             heap: BinaryHeap::new(),
@@ -82,6 +93,7 @@ impl TopScoredDocuments {
         }
     }
 
+    /// Consumes the heap and returns documents sorted by decreasing score.
     pub fn into_sorted_vec(self) -> Vec<ScoredDocument> {
         self.heap.into_sorted_vec()
     }
