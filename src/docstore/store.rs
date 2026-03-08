@@ -100,17 +100,20 @@ impl DocumentStore {
         &self.meta.key_names
     }
 
+    #[inline]
     fn get_block_index(&self, doc_number: u64) -> u32 {
         let offset = (doc_number as usize) * 4;
         u32::from_le_bytes(self.offsets_data[offset..offset + 4].try_into().unwrap())
     }
 
+    #[inline]
     fn get_intra_offset(&self, doc_number: u64) -> u32 {
         let n = self.meta.num_documents as usize;
         let offset = n * 4 + (doc_number as usize) * 4;
         u32::from_le_bytes(self.offsets_data[offset..offset + 4].try_into().unwrap())
     }
 
+    #[inline]
     fn get_block_meta(&self, block_index: u32) -> BlockMeta {
         let offset = (block_index as usize) * BlockMeta::SIZE;
         BlockMeta::from_bytes(&self.blocks_data[offset..])
@@ -135,6 +138,7 @@ impl DocumentStore {
         }
     }
 
+    #[inline]
     fn decode_document_at(decompressed: &[u8], intra_offset: u32) -> BoxResult<Document> {
         let mut pos = intra_offset as usize;
 
@@ -164,6 +168,17 @@ impl DocumentStore {
                 )
                 .into());
             }
+        }
+
+        // Fast path for single document retrieval (avoids HashMap overhead)
+        if doc_numbers.len() == 1 {
+            let doc_num = doc_numbers[0];
+            let block_index = self.get_block_index(doc_num);
+            let intra_offset = self.get_intra_offset(doc_num);
+            let block_meta = self.get_block_meta(block_index);
+            let decompressed = self.decompress_block(&block_meta)?;
+            let doc = Self::decode_document_at(&decompressed, intra_offset)?;
+            return Ok(vec![doc]);
         }
 
         // Group by block index to minimize decompression
@@ -217,11 +232,19 @@ impl DocumentStore {
         }
 
         let doc_nums: Vec<u64> = found_indices.iter().map(|&(_, num)| num).collect();
-        let docs = self.get_by_number(&doc_nums)?;
+        let mut docs = self.get_by_number(&doc_nums)?;
 
         let mut results: Vec<Option<Document>> = vec![None; key_values.len()];
-        for (found_pos, (input_idx, _)) in found_indices.iter().enumerate() {
-            results[*input_idx] = Some(docs[found_pos].clone());
+        // Iterate in reverse to pop from the end (avoids shifting)
+        for (found_pos, &(input_idx, _)) in found_indices.iter().enumerate().rev() {
+            let doc = std::mem::replace(
+                &mut docs[found_pos],
+                Document {
+                    keys: HashMap::new(),
+                    content: Vec::new(),
+                },
+            );
+            results[input_idx] = Some(doc);
         }
 
         Ok(results)
