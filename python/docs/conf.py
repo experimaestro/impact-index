@@ -9,6 +9,7 @@ extensions = [
     "sphinx.ext.napoleon",
     "sphinx.ext.intersphinx",
     "autoapi.extension",
+    "sphinx_codeautolink",
 ]
 
 # -- AutoAPI configuration (reads .pyi stubs without importing the module) --

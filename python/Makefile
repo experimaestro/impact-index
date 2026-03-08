@@ -1,4 +1,4 @@
-SPHINX_DEPS = --with sphinx --with sphinx-autoapi --with furo
+SPHINX_DEPS = --with sphinx --with sphinx-autoapi --with sphinx-codeautolink --with furo
 
 .PHONY: docs docs-clean
 

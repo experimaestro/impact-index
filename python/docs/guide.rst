@@ -1,0 +1,293 @@
+User Guide
+==========
+
+.. _building-an-index:
+
+Building an Index
+-----------------
+
+Use :class:`~impact_index.IndexBuilder` to create a sparse index from
+document impact vectors. Each document is represented as a set of term
+indices with associated impact values.
+
+.. code-block:: python
+
+    import numpy as np
+    import impact_index
+
+    builder = impact_index.IndexBuilder("/path/to/index")
+
+    # Add documents: docid, term_indices, impact_values
+    terms = np.array([0, 5, 42], dtype=np.uintp)
+    values = np.array([1.2, 0.5, 3.1], dtype=np.float32)
+    builder.add(0, terms, values)
+
+    # More documents...
+    builder.add(1, np.array([2, 5, 8], dtype=np.uintp),
+                np.array([0.3, 0.9, 1.1], dtype=np.float32))
+
+    # Finalize and get a searchable index
+    index = builder.build(in_memory=True)
+
+Builder options
+~~~~~~~~~~~~~~~
+
+Use :class:`~impact_index.BuilderOptions` to control checkpointing
+(for crash recovery) and memory usage:
+
+.. code-block:: python
+
+    options = impact_index.BuilderOptions()
+    options.checkpoint_frequency = 100000   # checkpoint every N documents
+    options.in_memory_threshold = 1000000   # max postings per term before flush
+
+    builder = impact_index.IndexBuilder("/path/to/index", options=options)
+
+    # Resume from a checkpoint (returns None if no checkpoint exists)
+    last_docid = builder.get_checkpoint_doc_id()
+    if last_docid is not None:
+        print(f"Resuming from document {last_docid}")
+
+Storage dtype
+~~~~~~~~~~~~~
+
+By default, impact values are stored as ``float32``. You can choose a
+different on-disk type to trade precision for space:
+
+.. code-block:: python
+
+    # Use float16 for smaller indices
+    builder = impact_index.IndexBuilder("/path/to/index", dtype="float16")
+
+Supported dtypes: ``"float32"`` (default), ``"float16"``, ``"bfloat16"``,
+``"float64"``, ``"int32"``, ``"int64"``.
+
+
+.. _searching:
+
+Searching
+---------
+
+Load an existing index and search it with WAND or MaxScore. Both return
+a list of :class:`~impact_index.ScoredDocument`:
+
+.. code-block:: python
+
+    import impact_index
+
+    index = impact_index.Index.load("/path/to/index", in_memory=True)
+
+    # Query: {term_index: query_weight}
+    query = {5: 1.0, 10: 0.5, 42: 1.5}
+
+    # WAND algorithm
+    results = index.search_wand(query, top_k=10)
+    for doc in results:
+        print(f"Document {doc.docid}: {doc.score}")
+
+    # MaxScore algorithm (often faster on compressed/split indices)
+    results = index.search_maxscore(query, top_k=10)
+
+Async search
+~~~~~~~~~~~~
+
+For non-blocking retrieval (e.g., in a web server):
+
+.. code-block:: python
+
+    results = await index.aio_search_wand(query, top_k=10)
+    results = await index.aio_search_maxscore(query, top_k=10)
+
+Iterating over postings
+~~~~~~~~~~~~~~~~~~~~~~~
+
+You can inspect individual posting lists. Each element is a
+:class:`~impact_index.TermImpact`:
+
+.. code-block:: python
+
+    iterator = index.postings(term_id)
+    print(f"Length: {iterator.length()}")
+    print(f"Max impact: {iterator.max_value()}")
+    print(f"Max doc ID: {iterator.max_doc_id()}")
+
+    for posting in iterator:
+        print(f"Doc {posting.docid}: {posting.value}")
+
+
+.. _compression:
+
+Compression and Transforms
+--------------------------
+
+Raw indices can be compressed to reduce size and improve cache efficiency.
+:class:`~impact_index.CompressionTransform` applies block-based encoding
+with configurable compressors for document IDs and impact values.
+
+.. code-block:: python
+
+    import impact_index
+
+    index = impact_index.Index.load("/path/to/raw_index", in_memory=True)
+
+    # Create compressors
+    docid_compressor = impact_index.EliasFanoCompressor()
+
+    # Fixed-range quantization (if you know the value range)
+    impact_compressor = impact_index.ImpactQuantizer(nbits=8, min=0.0, max=10.0)
+
+    # Or auto-ranging quantization (determines range from the index)
+    impact_compressor = impact_index.GlobalImpactQuantizer(nbits=8)
+
+    # Apply compression
+    transform = impact_index.CompressionTransform(
+        max_block_size=128,
+        doc_ids_compressor=docid_compressor,
+        impacts_compressor=impact_compressor,
+    )
+    transform.process("/path/to/compressed", index)
+
+    # Load the compressed index
+    compressed = impact_index.Index.load("/path/to/compressed", in_memory=True)
+
+Splitting by quantiles
+~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~impact_index.SplitIndexTransform` partitions each term's postings
+into sub-lists by value ranges, enabling more aggressive pruning with
+MaxScore:
+
+.. code-block:: python
+
+    base_transform = impact_index.CompressionTransform(
+        max_block_size=128,
+        doc_ids_compressor=impact_index.EliasFanoCompressor(),
+        impacts_compressor=impact_index.GlobalImpactQuantizer(nbits=8),
+    )
+
+    split_transform = impact_index.SplitIndexTransform(
+        quantiles=[0.5, 0.9],   # split at 50th and 90th percentile
+        sink=base_transform,
+    )
+    split_transform.process("/path/to/split_index", index)
+
+
+.. _bmp:
+
+BMP (Block-Max Pruning)
+-----------------------
+
+BMP implements "Faster Learned Sparse Retrieval with Block-Max Pruning"
+(SIGIR 2024) for fast approximate search.
+
+Converting to BMP format
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    import impact_index
+
+    index = impact_index.Index.load("/path/to/index", in_memory=True)
+
+    # Streaming conversion (recommended — memory-efficient)
+    index.to_bmp_streaming("/path/to/bmp_index.bin", bsize=64, compress_range=True)
+
+    # Or legacy method (loads all postings into memory)
+    # index.to_bmp("/path/to/bmp_index.bin", bsize=64, compress_range=True)
+
+Searching with BMP
+~~~~~~~~~~~~~~~~~~
+
+Load a BMP index with :class:`~impact_index.BmpSearcher` and search:
+
+.. code-block:: python
+
+    searcher = impact_index.BmpSearcher("/path/to/bmp_index.bin")
+    print(f"Documents: {searcher.num_documents()}")
+
+    # Query uses string term IDs
+    query = {"term1": 1.0, "term2": 0.5}
+    doc_ids, scores = searcher.search(query, k=10, alpha=1.0, beta=1.0)
+    for docid, score in zip(doc_ids, scores):
+        print(f"{docid}: {score}")
+
+BMP search parameters:
+
+- ``k`` — number of results to return
+- ``alpha`` — controls early termination aggressiveness (default: 1.0)
+- ``beta`` — controls block skipping (default: 1.0)
+
+
+.. _document-store:
+
+Document Store
+--------------
+
+The document store provides compressed storage for document content and
+metadata, using zstd block compression. Documents can be retrieved by
+sequential number or by key fields.
+
+Building a store
+~~~~~~~~~~~~~~~~
+
+Use :class:`~impact_index.DocumentStoreBuilder` to create a store:
+
+.. code-block:: python
+
+    import impact_index
+
+    builder = impact_index.DocumentStoreBuilder(
+        "/path/to/store",
+        block_size=4096,    # documents per compressed block
+        zstd_level=3,       # compression level
+    )
+
+    # Add documents with key-value metadata and binary content
+    builder.add({"docno": "DOC001", "url": "http://example.com"}, b"document text here")
+    builder.add({"docno": "DOC002", "url": "http://example.com/2"}, b"another document")
+
+    # Finalize (can only be called once)
+    builder.build()
+
+Retrieving documents
+~~~~~~~~~~~~~~~~~~~~
+
+Load a store with :meth:`~impact_index.DocumentStore.load` and retrieve
+:class:`~impact_index.Document` objects by number or key. Each document
+has :attr:`~impact_index.Document.keys` (metadata dict) and
+:attr:`~impact_index.Document.content` (bytes):
+
+.. code-block:: python
+
+    store = impact_index.DocumentStore.load(
+        "/path/to/store",
+        content_access="memory",  # or "mmap" or "disk"
+    )
+
+    print(f"Total documents: {store.num_documents()}")
+    print(f"Key fields: {store.key_names()}")
+
+    # By sequential number (0-based)
+    docs = store.get_by_number([0, 1, 2])
+    for doc in docs:
+        print(doc.keys, doc.content)
+
+    # By key field value
+    docs = store.get_by_key("docno", ["DOC001", "DOC002"])
+    for doc in docs:
+        if doc is not None:
+            print(doc.keys, doc.content)
+
+The ``content_access`` parameter controls how content data is accessed:
+
+- ``"memory"`` — loads all content into RAM (fastest, highest memory)
+- ``"mmap"`` — memory-mapped I/O (OS manages caching)
+- ``"disk"`` — reads from disk on demand (lowest memory)
+
+Async retrieval
+~~~~~~~~~~~~~~~
+
+.. code-block:: python
+
+    docs = await store.aio_get_by_number([0, 1, 2])
+    docs = await store.aio_get_by_key("docno", ["DOC001", "DOC002"])

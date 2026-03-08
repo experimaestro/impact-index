@@ -1,6 +1,8 @@
-# Python Documentation
+# Python Documentation (Development)
 
-This directory contains the Python type stubs and Sphinx documentation for the `impact_index` module.
+This directory contains the Python type stubs and Sphinx documentation source for the `impact_index` module.
+
+For the full user documentation, see: https://experimaestro-ir-rust.readthedocs.io/en/latest/index.html
 
 ## Files
 
