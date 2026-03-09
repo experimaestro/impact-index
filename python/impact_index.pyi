@@ -447,6 +447,11 @@ class Document:
     """A stored document with key-value metadata and binary content."""
 
     @property
+    def internal_id(self) -> Optional[int]:
+        """The internal sequential ID (0-based) assigned by the document store."""
+        ...
+
+    @property
     def keys(self) -> dict[str, str]:
         """The document's key-value metadata (e.g., ``{"docno": "DOC001"}``)."""
         ...

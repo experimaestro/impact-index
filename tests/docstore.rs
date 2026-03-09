@@ -14,20 +14,14 @@ fn init_logger() {
 fn make_doc(docno: &str, content: &[u8]) -> Document {
     let mut keys = HashMap::new();
     keys.insert("docno".to_string(), docno.to_string());
-    Document {
-        keys,
-        content: content.to_vec(),
-    }
+    Document::new(keys, content.to_vec())
 }
 
 fn make_doc_multi_keys(docno: &str, url: &str, content: &[u8]) -> Document {
     let mut keys = HashMap::new();
     keys.insert("docno".to_string(), docno.to_string());
     keys.insert("url".to_string(), url.to_string());
-    Document {
-        keys,
-        content: content.to_vec(),
-    }
+    Document::new(keys, content.to_vec())
 }
 
 #[test]
