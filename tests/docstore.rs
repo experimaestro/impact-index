@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use impact_index::docstore::{
     builder::DocumentStoreBuilder,
     store::{ContentAccess, DocumentStore},
-    Document,
+    DocumentData,
 };
 use temp_dir::TempDir;
 
@@ -11,17 +11,23 @@ fn init_logger() {
     let _ = env_logger::builder().is_test(true).try_init();
 }
 
-fn make_doc(docno: &str, content: &[u8]) -> Document {
+fn make_doc(docno: &str, content: &[u8]) -> DocumentData {
     let mut keys = HashMap::new();
     keys.insert("docno".to_string(), docno.to_string());
-    Document::new(keys, content.to_vec())
+    DocumentData {
+        keys,
+        content: content.to_vec(),
+    }
 }
 
-fn make_doc_multi_keys(docno: &str, url: &str, content: &[u8]) -> Document {
+fn make_doc_multi_keys(docno: &str, url: &str, content: &[u8]) -> DocumentData {
     let mut keys = HashMap::new();
     keys.insert("docno".to_string(), docno.to_string());
     keys.insert("url".to_string(), url.to_string());
-    Document::new(keys, content.to_vec())
+    DocumentData {
+        keys,
+        content: content.to_vec(),
+    }
 }
 
 #[test]

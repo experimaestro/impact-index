@@ -889,7 +889,7 @@ pub struct PyDocument {
 impl PyDocument {
     /// The internal sequential ID (0-based) assigned by the document store.
     #[getter]
-    fn internal_id(&self) -> Option<u64> {
+    fn internal_id(&self) -> u64 {
         self.inner.internal_id
     }
 
@@ -952,7 +952,10 @@ impl PyDocumentStoreBuilder {
     ///     keys: Dictionary of string key-value metadata
     ///     content: Binary content of the document
     fn add(&mut self, keys: HashMap<String, String>, content: &[u8]) -> PyResult<()> {
-        let doc = docstore::Document::new(keys, content.to_vec());
+        let doc = docstore::DocumentData {
+            keys,
+            content: content.to_vec(),
+        };
         self.builder
             .as_mut()
             .ok_or_else(|| {

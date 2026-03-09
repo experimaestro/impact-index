@@ -447,7 +447,7 @@ class Document:
     """A stored document with key-value metadata and binary content."""
 
     @property
-    def internal_id(self) -> Optional[int]:
+    def internal_id(self) -> int:
         """The internal sequential ID (0-based) assigned by the document store."""
         ...
 

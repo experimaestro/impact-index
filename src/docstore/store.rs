@@ -139,7 +139,10 @@ impl DocumentStore {
     }
 
     #[inline]
-    fn decode_document_at(decompressed: &[u8], intra_offset: u32) -> BoxResult<Document> {
+    fn decode_document_at(
+        decompressed: &[u8],
+        intra_offset: u32,
+    ) -> BoxResult<(HashMap<String, String>, Vec<u8>)> {
         let mut pos = intra_offset as usize;
 
         let keys_len = u64::from_le_bytes(decompressed[pos..pos + 8].try_into().unwrap()) as usize;
@@ -155,7 +158,7 @@ impl DocumentStore {
 
         let content = decompressed[pos..pos + content_len].to_vec();
 
-        Ok(Document::new(keys, content))
+        Ok((keys, content))
     }
 
     /// Retrieve documents by their sequential numbers (0-based).
@@ -177,9 +180,12 @@ impl DocumentStore {
             let intra_offset = self.get_intra_offset(doc_num);
             let block_meta = self.get_block_meta(block_index);
             let decompressed = self.decompress_block(&block_meta)?;
-            let mut doc = Self::decode_document_at(&decompressed, intra_offset)?;
-            doc.internal_id = Some(doc_num);
-            return Ok(vec![doc]);
+            let (keys, content) = Self::decode_document_at(&decompressed, intra_offset)?;
+            return Ok(vec![Document {
+                internal_id: doc_num,
+                keys,
+                content,
+            }]);
         }
 
         // Group by block index to minimize decompression
@@ -200,9 +206,12 @@ impl DocumentStore {
             let decompressed = self.decompress_block(&block_meta)?;
 
             for &(result_idx, doc_num, intra_offset) in docs_in_block {
-                let mut doc = Self::decode_document_at(&decompressed, intra_offset)?;
-                doc.internal_id = Some(doc_num);
-                results[result_idx] = Some(doc);
+                let (keys, content) = Self::decode_document_at(&decompressed, intra_offset)?;
+                results[result_idx] = Some(Document {
+                    internal_id: doc_num,
+                    keys,
+                    content,
+                });
             }
         }
 
@@ -241,7 +250,11 @@ impl DocumentStore {
         for (found_pos, &(input_idx, _)) in found_indices.iter().enumerate().rev() {
             let doc = std::mem::replace(
                 &mut docs[found_pos],
-                Document::new(HashMap::new(), Vec::new()),
+                Document {
+                    internal_id: 0,
+                    keys: HashMap::new(),
+                    content: Vec::new(),
+                },
             );
             results[input_idx] = Some(doc);
         }

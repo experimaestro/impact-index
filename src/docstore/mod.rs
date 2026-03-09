@@ -4,24 +4,20 @@ pub mod store;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-/// A document with string key-value metadata and raw content bytes.
+/// Document data for building a document store (keys + content, no ID).
 #[derive(Debug, Clone)]
-pub struct Document {
-    /// The internal sequential ID (0-based), populated when retrieved from a store.
-    pub internal_id: Option<u64>,
+pub struct DocumentData {
     pub keys: HashMap<String, String>,
     pub content: Vec<u8>,
 }
 
-impl Document {
-    /// Create a new document (without an internal ID).
-    pub fn new(keys: HashMap<String, String>, content: Vec<u8>) -> Self {
-        Self {
-            internal_id: None,
-            keys,
-            content,
-        }
-    }
+/// A document retrieved from a store, with its internal sequential ID.
+#[derive(Debug, Clone)]
+pub struct Document {
+    /// The internal sequential ID (0-based).
+    pub internal_id: u64,
+    pub keys: HashMap<String, String>,
+    pub content: Vec<u8>,
 }
 
 /// Fixed-size record for block metadata in blocks.dat.

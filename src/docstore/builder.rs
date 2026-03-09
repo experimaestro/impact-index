@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::base::BoxResult;
 
 use super::{
-    BlockMeta, Document, DocumentStoreMeta, BLOCKS_FILE, CONTENT_FILE, META_FILE, OFFSETS_FILE,
+    BlockMeta, DocumentData, DocumentStoreMeta, BLOCKS_FILE, CONTENT_FILE, META_FILE, OFFSETS_FILE,
 };
 
 /// Builds a DocumentStore on disk with block-based zstd compression.
@@ -67,7 +67,7 @@ impl DocumentStoreBuilder {
     }
 
     /// Add a document to the store.
-    pub fn add(&mut self, doc: &Document) -> BoxResult<()> {
+    pub fn add(&mut self, doc: &DocumentData) -> BoxResult<()> {
         let block_index = self.num_blocks as u32;
         let intra_offset = self.current_block_buf.len() as u32;
 
