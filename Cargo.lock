@@ -670,7 +670,7 @@ dependencies = [
 
 [[package]]
 name = "impact-index"
-version = "0.32.0"
+version = "1.0.0"
 dependencies = [
  "bincode",
  "bitstream-io",
