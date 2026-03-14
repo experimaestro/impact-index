@@ -6,12 +6,25 @@ authors = ["Benjamin Piwowarski <benjamin@piwowarski.fr>"]
 license = "GPL-2.0-or-later"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[workspace]
+members = ["."]
+default-members = ["."]
+exclude = ["BMP/python"]
+
 [lib]
 name = "impact_index"
 crate-type = ["cdylib", "rlib"]
 bench = false
 test = false
 
+[features]
+extension-module = ["pyo3/extension-module"]
+stub-gen = ["pyo3-stub-gen"]
+
+
+[[bin]]
+name = "stub_gen"
+required-features = ["stub-gen"]
 
 [[bench]]
 name = "sparse"
@@ -31,11 +44,12 @@ name = "bm25"
 
 
 [dependencies]
-pyo3 = { version = "0.20.3", features = ["extension-module", "abi3-py38"] }
-pyo3-asyncio = { version = "0.20.0", features = ["attributes", "tokio-runtime"] }
-pyo3-log = "0.9.0"
+pyo3 = { version = "0.28" }
+pyo3-stub-gen = { version = "0.19", optional = true }
+pyo3-async-runtimes = { version = "0.28", features = ["attributes", "tokio-runtime"] }
+pyo3-log = "0.13"
 tokio = { version = "1", features = ["full"] }
-numpy = "0.20.0"
+numpy = "0.28"
 ndarray = { version = "0.15.4", features = [ "serde" ] }
 serde = { version = "^1.0", features = ["derive"] }
 simple-error = "0.2.3"
@@ -79,4 +93,4 @@ rand = "0.8.5"
 path = "libs/helpers"
 
 [build-dependencies]
-pyo3-build-config = "0.20.3"
+pyo3-build-config = "0.28"

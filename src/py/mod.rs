@@ -1,9 +1,10 @@
 use log::debug;
+use pyo3::PyClassInitializer;
 use pyo3::{
-    pyclass, pymethods, pymodule, types::PyDict, types::PyModule, IntoPy, Py, PyAny, PyObject,
-    PyRef, PyResult, Python,
+    pyclass, pymethods, pymodule,
+    types::{PyAnyMethods, PyDict, PyModule, PyModuleMethods},
+    Bound, Py, PyAny, PyRef, PyResult, Python,
 };
-use pyo3::{PyClassInitializer, ToPyObject};
 
 use std::collections::HashMap;
 use std::future::IntoFuture;
@@ -24,7 +25,7 @@ use crate::scoring::bm25::BM25Scoring;
 use crate::scoring::ScoredIndex;
 use crate::transforms::split::SplitIndexTransform;
 use crate::vocab::analyzer::TextAnalyzer;
-use crate::vocab::stemmer::{NoStemmer, SnowballStemmer};
+use crate::vocab::stemmer::SnowballStemmer;
 
 use bmp::index::posting_list::PostingListIterator;
 use bmp::query::MAX_TERM_WEIGHT;
@@ -36,13 +37,22 @@ use crate::index::SparseIndex;
 use crate::search::maxscore::{search_maxscore, MaxScoreOptions};
 use crate::transforms::IndexTransform;
 use crate::{
-    base::SearchFn, base::TermImpactIterator, builder::Indexer as SparseIndexer,
-    search::wand::search_wand,
+    base::TermImpactIterator, builder::Indexer as SparseIndexer, search::wand::search_wand,
 };
 
-use numpy::{PyArray1, PyArrayDyn};
+use numpy::{PyArray1, PyArrayMethods};
+#[cfg(feature = "stub-gen")]
+use pyo3_stub_gen::derive::*;
+
+/// Type alias for search functions
+type SearchFn = fn(
+    index: &dyn SparseIndex,
+    query: &HashMap<TermIndex, ImpactValue>,
+    top_k: usize,
+) -> Vec<crate::search::ScoredDocument>;
 
 /// A single term impact: a (document ID, impact value) pair.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "TermImpact")]
 struct PyTermImpact {
     /// The impact value.
@@ -55,6 +65,7 @@ struct PyTermImpact {
 }
 
 /// A document with its retrieval score, returned by search methods.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass]
 pub struct PyScoredDocument {
     /// The relevance score.
@@ -70,7 +81,8 @@ pub struct PyScoredDocument {
 ///
 /// Yields TermImpact objects with (docid, value) pairs.
 /// Also provides metadata: length(), max_value(), max_doc_id().
-#[pyclass(name = "SparseIndexIterator")]
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(name = "SparseIndexIterator", unsendable)]
 struct PySparseIndexIterator {
     // Use dead code to ensure we have a valid index when iterating
     #[allow(dead_code)]
@@ -78,6 +90,7 @@ struct PySparseIndexIterator {
     iter: TermImpactIterator<'static>,
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PySparseIndexIterator {
     fn __next__(&mut self) -> PyResult<Option<PyTermImpact>> {
@@ -111,6 +124,7 @@ impl PySparseIndexIterator {
 }
 
 /// Base class for index views.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(subclass, name = "IndexView")]
 pub struct PyIndexView {}
 
@@ -128,17 +142,50 @@ pub struct PyIndexView {}
 /// for doc in results:
 ///     print(doc.docid, doc.score)
 /// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "Index", extends=PyIndexView)]
 pub struct PySparseIndex {
     index: Arc<Box<dyn SparseIndex>>,
 }
 
 impl PySparseIndex {
-    fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
+    fn _search(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+        search_fn: SearchFn,
+    ) -> PyResult<Py<PyAny>> {
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
         let results = search_fn(&**self.index, &query, top_k);
 
-        let list = Python::with_gil(|py| {
+        let v: Vec<PyScoredDocument> = results
+            .iter()
+            .map(|r| PyScoredDocument {
+                docid: r.docid,
+                score: r.score,
+            })
+            .collect();
+        Ok(pyo3::IntoPyObject::into_pyobject(v, py)?.into())
+    }
+
+    fn _aio_search<'a>(
+        &self,
+        py: Python<'a>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+        search_fn: SearchFn,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let index = self.index.clone();
+
+        let query: HashMap<usize, ImpactValue> = py_query.extract()?;
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let results = task::spawn(async move { search_fn(&**index, &query, top_k) })
+                .into_future()
+                .await
+                .expect("Error while searching");
+
             let v: Vec<PyScoredDocument> = results
                 .iter()
                 .map(|r| PyScoredDocument {
@@ -146,63 +193,19 @@ impl PySparseIndex {
                     score: r.score,
                 })
                 .collect();
-            return v.into_py(py);
-        });
-
-        Ok(list)
-    }
-
-    fn _aio_search<'a>(
-        &self,
-        py: Python<'a>,
-        py_query: &PyDict,
-        top_k: usize,
-        search_fn: SearchFn,
-    ) -> PyResult<&'a PyAny> {
-        let index = self.index.clone();
-
-        let query: HashMap<usize, ImpactValue> = py_query.extract()?;
-
-        let fut = async move {
-            let results = task::spawn(async move {
-                let r = search_fn(&**index, &query, top_k);
-                r
-            })
-            .into_future()
-            .await
-            .expect("Error while searching");
-
-            Ok(Python::with_gil(|py| {
-                let v: Vec<PyScoredDocument> = results
-                    .iter()
-                    .map(|r| PyScoredDocument {
-                        docid: r.docid,
-                        score: r.score,
-                    })
-                    .collect();
-
-                v.into_py(py)
-            }))
-        };
-
-        pyo3_asyncio::tokio::future_into_py(py, fut)
+            Ok(v)
+        })
     }
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PySparseIndex {
     /// Returns an iterator over the posting list for the given term index.
-    ///
-    /// Args:
-    ///     term: The term index (0-based vocabulary position)
-    ///
-    /// Returns:
-    ///     A SparseIndexIterator yielding TermImpact objects
     fn postings(&self, term: TermIndex) -> PyResult<PySparseIndexIterator> {
         Ok(PySparseIndexIterator {
             index: self.index.clone(),
             // TODO: ugly but works since index is up here
-            // Could use ouroboros::self_referencing
             iter: unsafe { extend_lifetime(self.index.block_iterator(term)) },
         })
     }
@@ -213,160 +216,114 @@ impl PySparseIndex {
     }
 
     /// Search the index (deprecated, use search_wand instead).
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices to query weights
-    ///     top_k: Number of top results to return
-    ///
-    /// Returns:
-    ///     List of ScoredDocument sorted by decreasing score
-    fn search(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, search_wand)
+    fn search(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self._search(py, py_query, top_k, search_wand)
     }
 
     /// Search using the WAND algorithm.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices (int) to query weights (float)
-    ///     top_k: Number of top results to return
-    ///
-    /// Returns:
-    ///     List of ScoredDocument sorted by decreasing score
-    fn search_wand(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, search_wand)
+    fn search_wand(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self._search(py, py_query, top_k, search_wand)
     }
 
     /// Search using the MaxScore algorithm.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices (int) to query weights (float)
-    ///     top_k: Number of top results to return
-    ///
-    /// Returns:
-    ///     List of ScoredDocument sorted by decreasing score
-    fn search_maxscore(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, |index, query, top_k| {
+    fn search_maxscore(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self._search(py, py_query, top_k, |index, query, top_k| {
             let options = MaxScoreOptions::default();
             search_maxscore(index, query, top_k, options)
         })
     }
 
-    /// Async version of search_wand. Returns an awaitable result.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices to query weights
-    ///     top_k: Number of top results to return
+    /// Async version of search_wand.
     fn aio_search_wand<'a>(
         &self,
         py: Python<'a>,
-        py_query: &PyDict,
+        py_query: &Bound<'_, PyDict>,
         top_k: usize,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         self._aio_search(py, py_query, top_k, search_wand)
     }
 
-    /// Async version of search_maxscore. Returns an awaitable result.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices to query weights
-    ///     top_k: Number of top results to return
+    /// Async version of search_maxscore.
     fn aio_search_maxscore<'a>(
         &self,
         py: Python<'a>,
-        py_query: &PyDict,
+        py_query: &Bound<'_, PyDict>,
         top_k: usize,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         self._aio_search(py, py_query, top_k, |index, query, top_k| {
             let options = MaxScoreOptions::default();
             search_maxscore(index, query, top_k, options)
         })
     }
 
-    /// Convert the index into BMP format (legacy, loads all postings into memory).
-    ///
-    /// Args:
-    ///     output: Output file path for the BMP index
-    ///     bsize: Block size for BMP partitioning
-    ///     compress_range: Whether to compress block max scores
+    /// Convert the index into BMP format.
     fn to_bmp(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
         let index = self.index.clone();
         let output_path = PathBuf::from_str(output).expect("cannot use path");
         index
             .convert_to_bmp(&output_path, bsize, compress_range)
             .expect("Failed to write the BMP file");
-
         Ok(())
     }
 
     /// Convert into a BMP index using streaming (memory-efficient) method.
-    ///
-    /// Uses O(num_terms * num_blocks) memory instead of O(total_postings),
-    /// making it suitable for large indices that don't fit in memory.
-    ///
-    /// Args:
-    ///     output: Output file path for the BMP index
-    ///     bsize: Block size for BMP partitioning
-    ///     compress_range: Whether to compress block max scores
     fn to_bmp_streaming(&self, output: &str, bsize: usize, compress_range: bool) -> PyResult<()> {
         let index = self.index.clone();
         let output_path = PathBuf::from_str(output).expect("cannot use path");
         index
             .convert_to_bmp_streaming(&output_path, bsize, compress_range)
             .expect("Failed to write the BMP file");
-
         Ok(())
     }
 
     /// Create a scored index that applies a scoring model to raw postings.
-    ///
-    /// Args:
-    ///     scoring: A scoring model (e.g., ``BM25Scoring()``)
-    ///     doc_meta: Document metadata (from ``BOWIndexBuilder.build()`` or ``DocMetadata.load()``)
-    ///
-    /// Returns:
-    ///     A ScoredIndex with the same search methods as Index
     fn with_scoring(
         &self,
         py: Python<'_>,
         scoring: &PyBM25Scoring,
         doc_meta: &PyDocMetadata,
-    ) -> PyResult<PyObject> {
+    ) -> PyResult<Py<PyAny>> {
         let model = Box::new(BM25Scoring::with_params(scoring.k1, scoring.b));
         let scored = ScoredIndex::new(self.index.clone(), doc_meta.inner.clone(), model);
         let scored_box: Arc<Box<dyn SparseIndex>> = Arc::new(Box::new(scored));
 
         let base = PyClassInitializer::from(PyIndexView {});
         let sub = base.add_subclass(PyScoredIndex { index: scored_box });
-        Ok(Py::new(py, sub)?.to_object(py))
+        Ok(Py::new(py, sub)?.into_any())
     }
 
     /// Load an index from a directory.
-    ///
-    /// Args:
-    ///     folder: Path to the index directory
-    ///     in_memory: If True, loads data into RAM; otherwise uses memory-mapped I/O
-    ///
-    /// Returns:
-    ///     An Index instance ready for searching
     #[staticmethod]
-    fn load(py: Python<'_>, folder: &str, in_memory: bool) -> PyResult<PyObject> {
+    fn load(py: Python<'_>, folder: &str, in_memory: bool) -> PyResult<Py<PyAny>> {
         let base = PyClassInitializer::from(PyIndexView {});
         let sub = base.add_subclass(PySparseIndex {
             index: Arc::new(load_index(Path::new(folder), in_memory)),
         });
-
-        Ok(Py::new(py, sub)?.to_object(py))
+        Ok(Py::new(py, sub)?.into_any())
     }
 }
 
 /// Configuration options for IndexBuilder.
-///
-/// Attributes:
-///     checkpoint_frequency (int): Build a checkpoint every N documents (0 disables).
-///     in_memory_threshold (int): Max postings per term before flushing to disk.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "BuilderOptions")]
 struct PyBuilderOptions(BuilderOptions);
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyBuilderOptions {
     #[new]
@@ -397,23 +354,7 @@ impl PyBuilderOptions {
 }
 
 /// Builds a sparse index from document impact vectors.
-///
-/// The ``dtype`` parameter controls the on-disk value type:
-/// ``"float32"`` (default), ``"float16"``, ``"bfloat16"``,
-/// ``"float64"``, ``"int32"``, ``"int64"``.
-///
-/// Example:
-///
-/// ```python,ignore
-/// import numpy as np
-/// import impact_index
-///
-/// builder = impact_index.IndexBuilder("/path/to/index")
-/// terms = np.array([0, 5, 42], dtype=np.uintp)
-/// values = np.array([1.2, 0.5, 3.1], dtype=np.float32)
-/// builder.add(0, terms, values)
-/// index = builder.build(in_memory=True)
-/// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "IndexBuilder")]
 pub struct PyIndexBuilder {
     inner: Arc<Mutex<IndexerEnum>>,
@@ -429,27 +370,19 @@ enum IndexerEnum {
     I64(SparseIndexer<i64>),
 }
 
-/// Helper to add a document with f32 values to a typed indexer,
-/// converting from f32 to V on the fly.
+/// Helper to add a document with f32 values to a typed indexer.
 fn add_to_indexer<V: PostingValue>(
     indexer: &mut SparseIndexer<V>,
     docid: DocId,
-    terms: &PyArray1<TermIndex>,
-    values: &PyArray1<f32>,
+    terms: &Bound<'_, PyArray1<TermIndex>>,
+    values: &Bound<'_, PyArray1<f32>>,
 ) -> PyResult<()> {
     let terms_array = unsafe { terms.as_array() };
     let values_f32 = unsafe { values.as_array() };
 
-    // Convert f32 values to target type V
     let converted: Vec<V> = values_f32
         .iter()
-        .map(|&v| {
-            // Use serde to convert f32 -> V via f64 intermediary
-            // This works for all numeric types
-            let v64 = v as f64;
-            // For each type, we need a conversion from f64
-            convert_f64_to_posting_value::<V>(v64)
-        })
+        .map(|&v| convert_f64_to_posting_value::<V>(v as f64))
         .collect();
     let values_array = ndarray::Array::from_vec(converted);
     indexer.add(docid, &terms_array, &values_array)?;
@@ -488,44 +421,33 @@ unsafe fn extend_lifetime<'b>(r: TermImpactIterator<'b>) -> TermImpactIterator<'
     std::mem::transmute::<TermImpactIterator<'b>, TermImpactIterator<'static>>(r)
 }
 
+// gen_stub_pymethods skipped: PyArray1<usize> not supported
+// https://github.com/Jij-Inc/pyo3-stub-gen/issues/97
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyIndexBuilder {
     /// Create a new IndexBuilder.
-    ///
-    /// Args:
-    ///     folder: Directory where the index files will be written
-    ///     options: Optional BuilderOptions for checkpointing and memory control
-    ///     dtype: Value type for storage. Accepts string names ("float32",
-    ///         "float16", "bfloat16", "float64", "int32", "int64") or
-    ///         numpy dtype objects (e.g., ``np.float32``, ``np.float16``).
-    ///         Default is "float32".
     #[new]
     #[pyo3(signature = (folder, options=None, dtype=None))]
     fn new(
         folder: &str,
         options: Option<&PyBuilderOptions>,
-        dtype: Option<&PyAny>,
+        dtype: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let builder_options = match &options {
             Some(_options) => _options.0.clone(),
             None => BuilderOptions::default(),
         };
 
-        // Resolve the dtype to a string name
         let dtype_str: String = match dtype {
             None => "float32".to_string(),
             Some(obj) => {
-                // Try extracting as string first
                 if let Ok(s) = obj.extract::<String>() {
                     s
                 } else {
-                    // Try treating as numpy dtype (has a .name attribute)
                     match obj.getattr("name") {
                         Ok(name) => name.extract::<String>()?,
-                        Err(_) => {
-                            // Try str() representation
-                            obj.str()?.extract::<String>()?
-                        }
+                        Err(_) => obj.str()?.extract::<String>()?,
                     }
                 }
             }
@@ -553,33 +475,31 @@ impl PyIndexBuilder {
     }
 
     /// Add a document to the index.
-    ///
-    /// Args:
-    ///     docid: Unique document identifier (must be strictly increasing)
-    ///     terms: numpy array of term indices (dtype=uintp)
-    ///     values: numpy array of impact values (any numeric dtype, must be > 0).
-    ///         Values are converted to the builder's dtype automatically.
-    fn add(&mut self, docid: DocId, terms: &PyArray1<TermIndex>, values: &PyAny) -> PyResult<()> {
-        // Convert any numeric numpy array to f32 for uniform handling
+    fn add(
+        &mut self,
+        docid: DocId,
+        terms: &Bound<'_, PyArray1<TermIndex>>,
+        values: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
         let py = values.py();
         let np = py.import("numpy")?;
-        let values_f32: &PyArray1<f32> = np
+        let values_f32: Bound<'_, PyArray1<f32>> = np
             .call_method1("asarray", (values,))?
             .call_method1("astype", ("float32",))?
             .extract()?;
 
         let mut inner = self.inner.blocking_lock();
         match &mut *inner {
-            IndexerEnum::F32(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
-            IndexerEnum::F64(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
-            IndexerEnum::F16(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
-            IndexerEnum::BF16(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
-            IndexerEnum::I32(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
-            IndexerEnum::I64(indexer) => add_to_indexer(indexer, docid, terms, values_f32),
+            IndexerEnum::F32(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
+            IndexerEnum::F64(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
+            IndexerEnum::F16(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
+            IndexerEnum::BF16(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
+            IndexerEnum::I32(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
+            IndexerEnum::I64(indexer) => add_to_indexer(indexer, docid, terms, &values_f32),
         }
     }
 
-    /// Returns the document ID from the last checkpoint, or None if no checkpoint exists.
+    /// Returns the document ID from the last checkpoint, or None.
     fn get_checkpoint_doc_id(&self) -> Option<DocId> {
         let inner = self.inner.blocking_lock();
         match &*inner {
@@ -593,13 +513,7 @@ impl PyIndexBuilder {
     }
 
     /// Finalize the index and return a searchable Index.
-    ///
-    /// Args:
-    ///     in_memory: If True, the returned Index holds data in RAM
-    ///
-    /// Returns:
-    ///     An Index instance ready for searching
-    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
+    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<Py<PyAny>> {
         let mut inner = self.inner.blocking_lock();
 
         macro_rules! build_index {
@@ -610,7 +524,7 @@ impl PyIndexBuilder {
                 let sub = base.add_subclass(PySparseIndex {
                     index: Arc::new(Box::new(index)),
                 });
-                Ok(Py::new(py, sub)?.to_object(py))
+                Ok(Py::new(py, sub)?.into_any())
             }};
         }
 
@@ -626,20 +540,18 @@ impl PyIndexBuilder {
 }
 
 /// Base class for document ID compressors.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(subclass)]
 pub struct PyDocIdCompressor {
     inner: Arc<Box<dyn compress::DocIdCompressorFactory>>,
 }
 
-impl PyDocIdCompressor {}
-
 /// Elias-Fano encoding for document ID compression.
-///
-/// Provides near-optimal space usage for monotonically increasing integer
-/// sequences (document IDs).
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name="EliasFanoCompressor", extends=PyDocIdCompressor)]
 pub struct PyEliasFanoCompressor {}
 
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyEliasFanoCompressor {
     #[new]
@@ -654,25 +566,18 @@ impl PyEliasFanoCompressor {
 }
 
 /// Base class for impact value compressors.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "ImpactCompressor", subclass)]
 pub struct PyImpactCompressorFactory {
     inner: Arc<Box<dyn compress::ImpactCompressorFactory>>,
 }
 
-impl PyImpactCompressorFactory {}
-
 /// Fixed-range quantizer for impact values.
-///
-/// Quantizes float impact values into a fixed number of bits using
-/// a specified [min, max] range.
-///
-/// Args:
-///     nbits: Number of bits for quantization (e.g., 8 for 256 levels)
-///     min: Minimum impact value in the range
-///     max: Maximum impact value in the range
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name="ImpactQuantizer", extends=PyImpactCompressorFactory)]
 pub struct PyImpactQuantizer {}
 
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyImpactQuantizer {
     #[new]
@@ -687,15 +592,11 @@ impl PyImpactQuantizer {
 }
 
 /// Auto-ranging quantizer that determines min/max from the index.
-///
-/// Unlike ImpactQuantizer, this computes the value range automatically
-/// from the global index statistics.
-///
-/// Args:
-///     nbits: Number of bits for quantization (e.g., 8 for 256 levels)
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name="GlobalImpactQuantizer", extends=PyImpactCompressorFactory)]
 pub struct PyGlobalQuantizerFactory {}
 
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyGlobalQuantizerFactory {
     #[new]
@@ -714,27 +615,20 @@ trait PyTransformFactory: Send + Sync {
 }
 
 /// Base class for index transforms.
-///
-/// Call ``process(path, index)`` to apply the transform and write
-/// the result to the given directory.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(subclass)]
 pub struct PyTransform {
     factory: Box<dyn PyTransformFactory>,
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyTransform {
     /// Apply this transform to an index, writing the result to path.
-    ///
-    /// Args:
-    ///     path: Output directory for the transformed index
-    ///     index: The source index to transform
-    fn process(&self, path: &str, index: &PySparseIndex) -> PyResult<()> {
-        Python::with_gil(|py| {
-            let transform = self.factory.create(py);
-            let view = index.index.as_view();
-            transform.process(Path::new(path), view)
-        })?;
+    fn process(&self, py: Python<'_>, path: &str, index: &PySparseIndex) -> PyResult<()> {
+        let transform = self.factory.create(py);
+        let view = index.index.as_view();
+        transform.process(Path::new(path), view)?;
         Ok(())
     }
 }
@@ -747,34 +641,22 @@ struct PyCompressionTransformFactory {
 
 impl PyTransformFactory for PyCompressionTransformFactory {
     fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform> {
+        let impacts = self.impacts_compressor.bind(py).borrow();
+        let docids = self.doc_ids_compressor.bind(py).borrow();
         Box::new(CompressionTransform {
             max_block_size: self.max_block_size,
-            impacts_compressor_factory: (*(*self.impacts_compressor.borrow(py)).inner).clone(),
-            doc_ids_compressor_factory: (*(*self.doc_ids_compressor.borrow(py)).inner).clone(),
+            impacts_compressor_factory: (*impacts.inner).clone(),
+            doc_ids_compressor_factory: (*docids.inner).clone(),
         })
     }
 }
 
 /// Transform that compresses an index using block-based encoding.
-///
-/// Args:
-///     max_block_size: Maximum number of postings per compressed block
-///     doc_ids_compressor: A DocIdCompressor (e.g., EliasFanoCompressor)
-///     impacts_compressor: An ImpactCompressor (e.g., ImpactQuantizer)
-///
-/// Example:
-///
-/// ```python,ignore
-/// transform = impact_index.CompressionTransform(
-///     max_block_size=128,
-///     doc_ids_compressor=impact_index.EliasFanoCompressor(),
-///     impacts_compressor=impact_index.GlobalImpactQuantizer(nbits=8),
-/// )
-/// transform.process("/path/to/compressed", index)
-/// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(extends=PyTransform, name="CompressionTransform")]
 pub struct PyCompressionTransform {}
 
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyCompressionTransform {
     #[new]
@@ -784,9 +666,9 @@ impl PyCompressionTransform {
         impacts_compressor: Py<PyImpactCompressorFactory>,
     ) -> (Self, PyTransform) {
         let factory = Box::new(PyCompressionTransformFactory {
-            max_block_size: max_block_size,
-            doc_ids_compressor: doc_ids_compressor,
-            impacts_compressor: impacts_compressor,
+            max_block_size,
+            doc_ids_compressor,
+            impacts_compressor,
         });
         (PyCompressionTransform {}, PyTransform { factory })
     }
@@ -798,8 +680,8 @@ struct PySplitIndexTransformFactory {
 }
 impl PyTransformFactory for PySplitIndexTransformFactory {
     fn create(&self, py: Python<'_>) -> Box<dyn IndexTransform> {
-        let sink = self.sink.borrow(py).factory.create(py);
-
+        let sink_ref = self.sink.bind(py).borrow();
+        let sink = sink_ref.factory.create(py);
         Box::new(SplitIndexTransform {
             sink,
             quantiles: self.quantiles.clone(),
@@ -808,16 +690,11 @@ impl PyTransformFactory for PySplitIndexTransformFactory {
 }
 
 /// Transform that splits posting lists by impact quantiles.
-///
-/// Partitions each term's postings into sub-lists by value ranges,
-/// enabling more aggressive pruning with algorithms like MaxScore.
-///
-/// Args:
-///     quantiles: List of quantile boundaries (e.g., [0.9] splits at the 90th percentile)
-///     sink: The downstream transform to apply (e.g., a CompressionTransform)
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name="SplitIndexTransform", extends=PyTransform)]
 struct PySplitIndexTransform {}
 
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PySplitIndexTransform {
     #[new]
@@ -828,15 +705,16 @@ impl PySplitIndexTransform {
 }
 
 /// BMP (Block-Max Pruning) Searcher for fast approximate search
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "BmpSearcher")]
 pub struct PyBmpSearcher {
     index: bmp::index::inverted_index::Index,
     bfwd: bmp::index::forward_index::BlockForwardIndex,
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyBmpSearcher {
-    /// Load a BMP index from a file
     #[new]
     fn new(path: &str) -> PyResult<Self> {
         let path_buf = PathBuf::from_str(path).expect("Invalid path");
@@ -846,16 +724,6 @@ impl PyBmpSearcher {
         Ok(PyBmpSearcher { index, bfwd })
     }
 
-    /// Search the BMP index
-    ///
-    /// Args:
-    ///     query: Dictionary mapping term IDs (as strings) to weights
-    ///     k: Number of results to return
-    ///     alpha: BMP alpha parameter (default 1.0)
-    ///     beta: BMP beta parameter (default 1.0)
-    ///
-    /// Returns:
-    ///     Tuple of (doc_ids, scores) where doc_ids are strings and scores are floats
     #[pyo3(signature = (query, k, alpha=1.0, beta=1.0))]
     fn search(
         &self,
@@ -864,7 +732,6 @@ impl PyBmpSearcher {
         alpha: f32,
         beta: f32,
     ) -> PyResult<(Vec<String>, Vec<f32>)> {
-        // Find max weight for normalization
         let max_tok_weight = query
             .iter()
             .map(|p| *p.1)
@@ -872,24 +739,20 @@ impl PyBmpSearcher {
             .max_by(|a, b| a.partial_cmp(b).unwrap())
             .unwrap_or(1.0);
 
-        // Quantize query weights
         let mut quant_query: HashMap<String, u32> = HashMap::new();
         let scale: f32 = MAX_TERM_WEIGHT as f32 / max_tok_weight;
         for (key, value) in &query {
             quant_query.insert(key.clone(), (value * scale).ceil() as u32);
         }
 
-        // Build cursors
         let cursors: Vec<PostingListIterator> = quant_query
             .iter()
             .flat_map(|(token, freq)| self.index.get_cursor(token, *freq))
             .collect();
         let wrapped_cursors = vec![cursors; 1];
 
-        // Search
         let mut results = b_search_verbose(wrapped_cursors, &self.bfwd, k, alpha, beta, false);
 
-        // Extract results
         let doc_lexicon = self.index.documents();
         let mut docnos: Vec<String> = Vec::new();
         let mut scores: Vec<f32> = Vec::new();
@@ -900,7 +763,6 @@ impl PyBmpSearcher {
         Ok((docnos, scores))
     }
 
-    /// Get the number of documents in the index
     fn num_documents(&self) -> usize {
         self.index.num_documents()
     }
@@ -908,55 +770,42 @@ impl PyBmpSearcher {
 
 // --- DocumentStore Python bindings ---
 
-/// A stored document with key-value metadata and binary content.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "Document")]
 pub struct PyDocument {
     inner: docstore::Document,
 }
 
+// gen_stub_pymethods skipped: &[u8] not supported
+// https://github.com/Jij-Inc/pyo3-stub-gen/issues/97
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyDocument {
-    /// The internal sequential ID (0-based) assigned by the document store.
     #[getter]
     fn internal_id(&self) -> u64 {
         self.inner.internal_id
     }
 
-    /// The document's key-value metadata (e.g., {"docno": "DOC001"}).
     #[getter]
     fn keys(&self) -> HashMap<String, String> {
         self.inner.keys.clone()
     }
 
-    /// The document's binary content.
     #[getter]
     fn content(&self) -> &[u8] {
         &self.inner.content
     }
 }
 
-/// Builds a compressed document store on disk.
-///
-/// Documents are added one at a time with key-value metadata and binary content,
-/// then finalized with build().
-///
-/// Args:
-///     folder: Directory for the document store files
-///     block_size: Number of documents per compressed block (default: 4096)
-///     zstd_level: Zstandard compression level (default: 3)
-///
-/// Example:
-///
-/// ```python,ignore
-/// builder = impact_index.DocumentStoreBuilder("/path/to/store")
-/// builder.add({"docno": "DOC001"}, b"document text here")
-/// builder.build()
-/// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "DocumentStoreBuilder")]
 pub struct PyDocumentStoreBuilder {
     builder: Option<docstore::builder::DocumentStoreBuilder>,
 }
 
+// gen_stub_pymethods skipped: &[u8] not supported
+// https://github.com/Jij-Inc/pyo3-stub-gen/issues/97
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyDocumentStoreBuilder {
     #[new]
@@ -975,11 +824,6 @@ impl PyDocumentStoreBuilder {
         })
     }
 
-    /// Add a document to the store.
-    ///
-    /// Args:
-    ///     keys: Dictionary of string key-value metadata
-    ///     content: Binary content of the document
     fn add(&mut self, keys: HashMap<String, String>, content: &[u8]) -> PyResult<()> {
         let doc = docstore::DocumentData {
             keys,
@@ -994,9 +838,6 @@ impl PyDocumentStoreBuilder {
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))
     }
 
-    /// Finalize and write the document store to disk.
-    ///
-    /// Can only be called once. Raises RuntimeError if called again.
     fn build(&mut self) -> PyResult<()> {
         let builder = self.builder.take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
@@ -1007,36 +848,17 @@ impl PyDocumentStoreBuilder {
     }
 }
 
-/// A compressed document store for retrieving documents by number or key.
-///
-/// Load with ``DocumentStore.load(folder)`` and retrieve documents
-/// using ``get_by_number()`` or ``get_by_key()``. Async variants
-/// (``aio_get_by_number``, ``aio_get_by_key``) are also available.
-///
-/// Example:
-///
-/// ```python,ignore
-/// store = impact_index.DocumentStore.load("/path/to/store")
-/// docs = store.get_by_number([0, 1, 2])
-/// for doc in docs:
-///     print(doc.keys, doc.content)
-/// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "DocumentStore")]
 pub struct PyDocumentStore {
     store: Arc<docstore::store::DocumentStore>,
 }
 
+// gen_stub_pymethods skipped: &[u8] in return types
+// https://github.com/Jij-Inc/pyo3-stub-gen/issues/97
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyDocumentStore {
-    /// Load a document store from disk.
-    ///
-    /// Args:
-    ///     folder: Path to the document store directory
-    ///     content_access: How to access content data - "memory" (load into RAM),
-    ///         "mmap" (memory-mapped), or "disk" (read from disk on demand)
-    ///
-    /// Returns:
-    ///     A DocumentStore instance
     #[staticmethod]
     #[pyo3(signature = (folder, content_access="memory"))]
     fn load(folder: &str, content_access: &str) -> PyResult<Self> {
@@ -1058,23 +880,14 @@ impl PyDocumentStore {
         })
     }
 
-    /// Returns the total number of documents in the store.
     fn num_documents(&self) -> u64 {
         self.store.num_documents()
     }
 
-    /// Returns the list of key names defined in the store.
     fn key_names(&self) -> Vec<String> {
         self.store.key_names().to_vec()
     }
 
-    /// Retrieve documents by their sequential number (0-based).
-    ///
-    /// Args:
-    ///     doc_numbers: List of document numbers to retrieve
-    ///
-    /// Returns:
-    ///     List of Document objects
     fn get_by_number(&self, doc_numbers: Vec<u64>) -> PyResult<Vec<PyDocument>> {
         let docs = self
             .store
@@ -1083,14 +896,6 @@ impl PyDocumentStore {
         Ok(docs.into_iter().map(|d| PyDocument { inner: d }).collect())
     }
 
-    /// Retrieve documents by a key field value.
-    ///
-    /// Args:
-    ///     key_name: Name of the key field to search (e.g., "docno")
-    ///     key_values: List of key values to look up
-    ///
-    /// Returns:
-    ///     List of Optional[Document] (None for keys not found)
     fn get_by_key(
         &self,
         key_name: &str,
@@ -1107,34 +912,32 @@ impl PyDocumentStore {
             .collect())
     }
 
-    /// Async version of get_by_number. Returns an awaitable result.
-    fn aio_get_by_number<'a>(&self, py: Python<'a>, doc_numbers: Vec<u64>) -> PyResult<&'a PyAny> {
+    fn aio_get_by_number<'a>(
+        &self,
+        py: Python<'a>,
+        doc_numbers: Vec<u64>,
+    ) -> PyResult<Bound<'a, PyAny>> {
         let store = self.store.clone();
-        let fut = async move {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let docs = task::spawn_blocking(move || {
                 store.get_by_number(&doc_numbers).map_err(|e| e.to_string())
             })
             .await
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-            Ok(Python::with_gil(|py| {
-                let v: Vec<PyDocument> =
-                    docs.into_iter().map(|d| PyDocument { inner: d }).collect();
-                v.into_py(py)
-            }))
-        };
-        pyo3_asyncio::tokio::future_into_py(py, fut)
+            let v: Vec<PyDocument> = docs.into_iter().map(|d| PyDocument { inner: d }).collect();
+            Ok(v)
+        })
     }
 
-    /// Async version of get_by_key. Returns an awaitable result.
     fn aio_get_by_key<'a>(
         &self,
         py: Python<'a>,
         key_name: String,
         key_values: Vec<String>,
-    ) -> PyResult<&'a PyAny> {
+    ) -> PyResult<Bound<'a, PyAny>> {
         let store = self.store.clone();
-        let fut = async move {
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let docs = task::spawn_blocking(move || {
                 let refs: Vec<&str> = key_values.iter().map(|s| s.as_str()).collect();
                 store
@@ -1144,35 +947,27 @@ impl PyDocumentStore {
             .await
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))?
             .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e))?;
-            Ok(Python::with_gil(|py| {
-                let v: Vec<Option<PyDocument>> = docs
-                    .into_iter()
-                    .map(|opt| opt.map(|d| PyDocument { inner: d }))
-                    .collect();
-                v.into_py(py)
-            }))
-        };
-        pyo3_asyncio::tokio::future_into_py(py, fut)
+            let v: Vec<Option<PyDocument>> = docs
+                .into_iter()
+                .map(|opt| opt.map(|d| PyDocument { inner: d }))
+                .collect();
+            Ok(v)
+        })
     }
 }
 
 // --- BM25 / Scoring Python bindings ---
 
 /// Document metadata (document lengths) for use with scoring models.
-///
-/// Loaded automatically when building with ``BOWIndexBuilder``, or manually
-/// via ``DocMetadata.load(folder)``.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "DocMetadata")]
 pub struct PyDocMetadata {
     inner: Arc<DocMetadata>,
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyDocMetadata {
-    /// Load document metadata from a directory.
-    ///
-    /// Args:
-    ///     folder: Path to the directory containing ``docmeta.dat`` and ``docmeta.cbor``
     #[staticmethod]
     fn load(folder: &str) -> PyResult<Self> {
         let meta = DocMetadata::load(std::path::Path::new(folder)).map_err(|e| {
@@ -1183,29 +978,18 @@ impl PyDocMetadata {
         })
     }
 
-    /// Number of documents.
     fn num_docs(&self) -> u64 {
         self.inner.num_docs()
     }
 
-    /// Average document length.
     fn avg_dl(&self) -> f32 {
         self.inner.avg_dl()
     }
 
-    /// Minimum document length.
     fn min_dl(&self) -> u32 {
         self.inner.min_dl()
     }
 
-    /// Copy document metadata files from one directory to another.
-    ///
-    /// Uses hard links with fallback to copy. Useful when applying
-    /// transforms that write to a new directory.
-    ///
-    /// Args:
-    ///     src: Source directory path
-    ///     dst: Destination directory path
     #[staticmethod]
     fn copy_files(src: &str, dst: &str) -> PyResult<()> {
         DocMetadata::copy_files(Path::new(src), Path::new(dst)).map_err(|e| {
@@ -1218,16 +1002,14 @@ impl PyDocMetadata {
 }
 
 /// BM25 scoring model.
-///
-/// Args:
-///     k1: Term frequency saturation parameter (default: 1.2)
-///     b: Length normalization parameter (default: 0.75)
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "BM25Scoring")]
 pub struct PyBM25Scoring {
     k1: f32,
     b: f32,
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyBM25Scoring {
     #[new]
@@ -1237,52 +1019,53 @@ impl PyBM25Scoring {
     }
 }
 
-/// A scored index that applies a scoring model (e.g., BM25) to raw postings.
-///
-/// Created via ``Index.with_scoring()`` or ``BOWIndexBuilder.build()``.
-/// Supports the same search methods as ``Index``.
+/// A scored index that applies a scoring model to raw postings.
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "ScoredIndex", extends = PyIndexView)]
 pub struct PyScoredIndex {
     index: Arc<Box<dyn SparseIndex>>,
 }
 
 impl PyScoredIndex {
-    fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
+    fn _search(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+        search_fn: SearchFn,
+    ) -> PyResult<Py<PyAny>> {
         let query: HashMap<usize, ImpactValue> = py_query.extract()?;
         let results = search_fn(&**self.index, &query, top_k);
-        let list = Python::with_gil(|py| {
-            let v: Vec<PyScoredDocument> = results
-                .iter()
-                .map(|r| PyScoredDocument {
-                    docid: r.docid,
-                    score: r.score,
-                })
-                .collect();
-            return v.into_py(py);
-        });
-        Ok(list)
+        let v: Vec<PyScoredDocument> = results
+            .iter()
+            .map(|r| PyScoredDocument {
+                docid: r.docid,
+                score: r.score,
+            })
+            .collect();
+        Ok(pyo3::IntoPyObject::into_pyobject(v, py)?.into())
     }
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
 #[pymethods]
 impl PyScoredIndex {
-    /// Search using the WAND algorithm.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices (int) to query weights (float).
-    ///         For BM25, weights are boost factors (default 1.0).
-    ///     top_k: Number of top results to return
-    fn search_wand(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, search_wand)
+    fn search_wand(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self._search(py, py_query, top_k, search_wand)
     }
 
-    /// Search using the MaxScore algorithm.
-    ///
-    /// Args:
-    ///     py_query: Dictionary mapping term indices (int) to query weights (float)
-    ///     top_k: Number of top results to return
-    fn search_maxscore(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
-        self._search(py_query, top_k, |index, query, top_k| {
+    fn search_maxscore(
+        &self,
+        py: Python<'_>,
+        py_query: &Bound<'_, PyDict>,
+        top_k: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self._search(py, py_query, top_k, |index, query, top_k| {
             let options = MaxScoreOptions::default();
             search_maxscore(index, query, top_k, options)
         })
@@ -1290,9 +1073,6 @@ impl PyScoredIndex {
 }
 
 /// Bag-of-words index builder for traditional IR (BM25, TF-IDF, etc.).
-///
-/// Wraps ``IndexBuilder`` and automatically computes document lengths.
-/// Optionally integrates text analysis (stemming + vocabulary).
 ///
 /// Example:
 ///
@@ -1303,6 +1083,7 @@ impl PyScoredIndex {
 /// scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
 /// results = scored.search_wand(query, top_k=10)
 /// ```
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
 #[pyclass(name = "BOWIndexBuilder")]
 pub struct PyBOWIndexBuilder {
     inner: Arc<Mutex<Option<BOWBuilderEnum>>>,
@@ -1314,16 +1095,11 @@ enum BOWBuilderEnum {
     F32(BOWIndexBuilder<f32>),
 }
 
+// gen_stub_pymethods skipped: PyArray1<usize> not supported
+// https://github.com/Jij-Inc/pyo3-stub-gen/issues/97
+// gen_stub_pymethods skipped: (Self, Parent) return in #[new] unsupported
 #[pymethods]
 impl PyBOWIndexBuilder {
-    /// Create a new BOWIndexBuilder.
-    ///
-    /// Args:
-    ///     folder: Directory where the index files will be written
-    ///     options: Optional BuilderOptions for checkpointing and memory control
-    ///     dtype: Value type for storage ("int32", "int64", "float32"). Default "int32".
-    ///     stemmer: Stemmer type ("snowball" or None). Default None.
-    ///     language: Language for the stemmer (e.g., "english"). Required if stemmer is set.
     #[new]
     #[pyo3(signature = (folder, options=None, dtype=None, stemmer=None, language=None))]
     fn new(
@@ -1340,7 +1116,6 @@ impl PyBOWIndexBuilder {
         let path = Path::new(folder);
         let dtype_str = dtype.unwrap_or("int32");
 
-        // Create analyzer if stemmer is specified
         let analyzer = match stemmer {
             Some("snowball") => {
                 let lang = language.unwrap_or("english");
@@ -1390,16 +1165,15 @@ impl PyBOWIndexBuilder {
         })
     }
 
-    /// Add pre-tokenized postings. Document length is auto-computed from values.
-    ///
-    /// Args:
-    ///     docid: Unique document identifier (must be strictly increasing)
-    ///     terms: numpy array of term indices (dtype=uintp)
-    ///     values: numpy array of TF values (any numeric dtype)
-    fn add(&mut self, docid: DocId, terms: &PyArray1<TermIndex>, values: &PyAny) -> PyResult<()> {
+    fn add(
+        &mut self,
+        docid: DocId,
+        terms: &Bound<'_, PyArray1<TermIndex>>,
+        values: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
         let py = values.py();
         let np = py.import("numpy")?;
-        let values_f32: &PyArray1<f32> = np
+        let values_f32: Bound<'_, PyArray1<f32>> = np
             .call_method1("asarray", (values,))?
             .call_method1("astype", ("float32",))?
             .extract()?;
@@ -1429,12 +1203,6 @@ impl PyBOWIndexBuilder {
         }
     }
 
-    /// Add raw text (requires stemmer). Tokenizes, stems, computes TF,
-    /// and records document length automatically.
-    ///
-    /// Args:
-    ///     docid: Unique document identifier (must be strictly increasing)
-    ///     text: Raw document text
     fn add_text(&mut self, docid: DocId, text: &str) -> PyResult<()> {
         let mut inner = self.inner.blocking_lock();
         let builder = inner.as_mut().ok_or_else(|| {
@@ -1457,13 +1225,6 @@ impl PyBOWIndexBuilder {
         }
     }
 
-    /// Analyze query text using the builder's text analyzer.
-    ///
-    /// Returns a dictionary mapping term indices to TF values.
-    /// Does NOT grow the vocabulary.
-    ///
-    /// Args:
-    ///     text: Query text to analyze
     fn analyze_query(&self, text: &str) -> PyResult<HashMap<TermIndex, f32>> {
         let inner = self.inner.blocking_lock();
         let builder = inner.as_ref().ok_or_else(|| {
@@ -1477,14 +1238,7 @@ impl PyBOWIndexBuilder {
         }
     }
 
-    /// Finalize the index and return a tuple of (Index, DocMetadata).
-    ///
-    /// Args:
-    ///     in_memory: If True, the returned Index holds data in RAM
-    ///
-    /// Returns:
-    ///     Tuple of (Index, DocMetadata)
-    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
+    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<Py<PyAny>> {
         let mut inner = self.inner.blocking_lock();
         let builder = inner.take().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
@@ -1500,16 +1254,16 @@ impl PyBOWIndexBuilder {
                 let py_index = base.add_subclass(PySparseIndex {
                     index: Arc::new(Box::new(index)),
                 });
-                let py_index = Py::new(py, py_index)?.to_object(py);
+                let py_index = Py::new(py, py_index)?.into_any();
                 let py_meta = Py::new(
                     py,
                     PyDocMetadata {
                         inner: Arc::new(doc_meta),
                     },
                 )?
-                .to_object(py);
+                .into_any();
 
-                Ok((py_index, py_meta).into_py(py))
+                Ok(pyo3::IntoPyObject::into_pyobject((py_index, py_meta), py)?.into())
             }};
         }
 
@@ -1522,12 +1276,8 @@ impl PyBOWIndexBuilder {
 }
 
 /// Python module for sparse index construction, compression, and search.
-///
-/// Provides classes for building, transforming, and querying sparse indices
-/// from neural information retrieval models, as well as a compressed
-/// document store.
 #[pymodule]
-fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
+fn impact_index(_py: Python, module: &Bound<'_, PyModule>) -> PyResult<()> {
     // Init logging
     pyo3_log::init();
     debug!("Loading xpmir-rust extension");
@@ -1556,3 +1306,6 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
 
     Ok(())
 }
+
+#[cfg(feature = "stub-gen")]
+pyo3_stub_gen::define_stub_info_gatherer!(stub_info);

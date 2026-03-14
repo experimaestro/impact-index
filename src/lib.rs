@@ -51,5 +51,5 @@ pub mod search;
 pub mod transforms;
 pub mod vocab;
 
-mod py;
+pub mod py;
 mod utils;
