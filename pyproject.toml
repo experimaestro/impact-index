@@ -19,5 +19,9 @@ authors = [
 ]
 readme = "README.md"
 
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["python"]
+
 [package]
 licence = {file = "LICENCE.txt"}

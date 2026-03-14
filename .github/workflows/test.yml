@@ -7,13 +7,29 @@ on:
     branches: [master]
 
 jobs:
-  linux:
+  rust:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
       with:
         submodules: 'true'
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
+    - uses: dtolnay/rust-toolchain@stable
     - run: cargo test
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        submodules: 'true'
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+    - name: Install dependencies
+      run: |
+        pip install maturin pytest pytest-asyncio numpy
+    - name: Build and install package
+      run: maturin develop --release
+    - name: Run Python tests
+      run: pytest python/ -v
