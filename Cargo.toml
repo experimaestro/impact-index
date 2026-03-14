@@ -26,6 +26,9 @@ name = "index"
 [[test]]
 name = "docstore"
 
+[[test]]
+name = "bm25"
+
 
 [dependencies]
 pyo3 = { version = "0.20.3", features = ["extension-module", "abi3-py38"] }
@@ -58,6 +61,7 @@ zstd = "0.13"
 serde_json = "1.0.120"
 bmp = { path = "BMP" }
 half = { version = "2", features = ["serde", "bytemuck"] }
+rust-stemmers = "1.2"
 protobuf = "^2.27"
 # FST for term map (same as BMP uses)
 fst = "0.4.7"
@@ -71,7 +75,7 @@ temp-dir = "0.1.11"
 rand_distr = "0.4.3"
 rand = "0.8.5"
 
-[dev-dependencies.helpers] 
+[dev-dependencies.helpers]
 path = "libs/helpers"
 
 [build-dependencies]

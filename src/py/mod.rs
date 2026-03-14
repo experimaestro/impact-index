@@ -13,12 +13,18 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tokio::task;
 
+use crate::bow::BOWIndexBuilder;
 use crate::builder::BuilderOptions;
 use crate::compress;
 use crate::compress::docid::EliasFanoCompressor;
 use crate::compress::CompressionTransform;
+use crate::docmeta::DocMetadata;
 use crate::docstore;
+use crate::scoring::bm25::BM25Scoring;
+use crate::scoring::ScoredIndex;
 use crate::transforms::split::SplitIndexTransform;
+use crate::vocab::analyzer::TextAnalyzer;
+use crate::vocab::stemmer::{NoStemmer, SnowballStemmer};
 
 use bmp::index::posting_list::PostingListIterator;
 use bmp::query::MAX_TERM_WEIGHT;
@@ -309,6 +315,29 @@ impl PySparseIndex {
             .expect("Failed to write the BMP file");
 
         Ok(())
+    }
+
+    /// Create a scored index that applies a scoring model to raw postings.
+    ///
+    /// Args:
+    ///     scoring: A scoring model (e.g., ``BM25Scoring()``)
+    ///     doc_meta: Document metadata (from ``BOWIndexBuilder.build()`` or ``DocMetadata.load()``)
+    ///
+    /// Returns:
+    ///     A ScoredIndex with the same search methods as Index
+    fn with_scoring(
+        &self,
+        py: Python<'_>,
+        scoring: &PyBM25Scoring,
+        doc_meta: &PyDocMetadata,
+    ) -> PyResult<PyObject> {
+        let model = Box::new(BM25Scoring::with_params(scoring.k1, scoring.b));
+        let scored = ScoredIndex::new(self.index.clone(), doc_meta.inner.clone(), model);
+        let scored_box: Arc<Box<dyn SparseIndex>> = Arc::new(Box::new(scored));
+
+        let base = PyClassInitializer::from(PyIndexView {});
+        let sub = base.add_subclass(PyScoredIndex { index: scored_box });
+        Ok(Py::new(py, sub)?.to_object(py))
     }
 
     /// Load an index from a directory.
@@ -1127,6 +1156,371 @@ impl PyDocumentStore {
     }
 }
 
+// --- BM25 / Scoring Python bindings ---
+
+/// Document metadata (document lengths) for use with scoring models.
+///
+/// Loaded automatically when building with ``BOWIndexBuilder``, or manually
+/// via ``DocMetadata.load(folder)``.
+#[pyclass(name = "DocMetadata")]
+pub struct PyDocMetadata {
+    inner: Arc<DocMetadata>,
+}
+
+#[pymethods]
+impl PyDocMetadata {
+    /// Load document metadata from a directory.
+    ///
+    /// Args:
+    ///     folder: Path to the directory containing ``docmeta.dat`` and ``docmeta.cbor``
+    #[staticmethod]
+    fn load(folder: &str) -> PyResult<Self> {
+        let meta = DocMetadata::load(std::path::Path::new(folder)).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!("Failed to load DocMetadata: {}", e))
+        })?;
+        Ok(Self {
+            inner: Arc::new(meta),
+        })
+    }
+
+    /// Number of documents.
+    fn num_docs(&self) -> u64 {
+        self.inner.num_docs()
+    }
+
+    /// Average document length.
+    fn avg_dl(&self) -> f32 {
+        self.inner.avg_dl()
+    }
+
+    /// Minimum document length.
+    fn min_dl(&self) -> u32 {
+        self.inner.min_dl()
+    }
+
+    /// Copy document metadata files from one directory to another.
+    ///
+    /// Uses hard links with fallback to copy. Useful when applying
+    /// transforms that write to a new directory.
+    ///
+    /// Args:
+    ///     src: Source directory path
+    ///     dst: Destination directory path
+    #[staticmethod]
+    fn copy_files(src: &str, dst: &str) -> PyResult<()> {
+        DocMetadata::copy_files(Path::new(src), Path::new(dst)).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!(
+                "Failed to copy doc metadata files: {}",
+                e
+            ))
+        })
+    }
+}
+
+/// BM25 scoring model.
+///
+/// Args:
+///     k1: Term frequency saturation parameter (default: 1.2)
+///     b: Length normalization parameter (default: 0.75)
+#[pyclass(name = "BM25Scoring")]
+pub struct PyBM25Scoring {
+    k1: f32,
+    b: f32,
+}
+
+#[pymethods]
+impl PyBM25Scoring {
+    #[new]
+    #[pyo3(signature = (k1=1.2, b=0.75))]
+    fn new(k1: f32, b: f32) -> Self {
+        Self { k1, b }
+    }
+}
+
+/// A scored index that applies a scoring model (e.g., BM25) to raw postings.
+///
+/// Created via ``Index.with_scoring()`` or ``BOWIndexBuilder.build()``.
+/// Supports the same search methods as ``Index``.
+#[pyclass(name = "ScoredIndex", extends = PyIndexView)]
+pub struct PyScoredIndex {
+    index: Arc<Box<dyn SparseIndex>>,
+}
+
+impl PyScoredIndex {
+    fn _search(&self, py_query: &PyDict, top_k: usize, search_fn: SearchFn) -> PyResult<PyObject> {
+        let query: HashMap<usize, ImpactValue> = py_query.extract()?;
+        let results = search_fn(&**self.index, &query, top_k);
+        let list = Python::with_gil(|py| {
+            let v: Vec<PyScoredDocument> = results
+                .iter()
+                .map(|r| PyScoredDocument {
+                    docid: r.docid,
+                    score: r.score,
+                })
+                .collect();
+            return v.into_py(py);
+        });
+        Ok(list)
+    }
+}
+
+#[pymethods]
+impl PyScoredIndex {
+    /// Search using the WAND algorithm.
+    ///
+    /// Args:
+    ///     py_query: Dictionary mapping term indices (int) to query weights (float).
+    ///         For BM25, weights are boost factors (default 1.0).
+    ///     top_k: Number of top results to return
+    fn search_wand(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        self._search(py_query, top_k, search_wand)
+    }
+
+    /// Search using the MaxScore algorithm.
+    ///
+    /// Args:
+    ///     py_query: Dictionary mapping term indices (int) to query weights (float)
+    ///     top_k: Number of top results to return
+    fn search_maxscore(&self, py_query: &PyDict, top_k: usize) -> PyResult<PyObject> {
+        self._search(py_query, top_k, |index, query, top_k| {
+            let options = MaxScoreOptions::default();
+            search_maxscore(index, query, top_k, options)
+        })
+    }
+}
+
+/// Bag-of-words index builder for traditional IR (BM25, TF-IDF, etc.).
+///
+/// Wraps ``IndexBuilder`` and automatically computes document lengths.
+/// Optionally integrates text analysis (stemming + vocabulary).
+///
+/// Example:
+///
+/// ```python,ignore
+/// builder = impact_index.BOWIndexBuilder("/path/to/index", dtype="int32")
+/// builder.add(0, terms, tf_values)
+/// index, doc_meta = builder.build(in_memory=True)
+/// scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
+/// results = scored.search_wand(query, top_k=10)
+/// ```
+#[pyclass(name = "BOWIndexBuilder")]
+pub struct PyBOWIndexBuilder {
+    inner: Arc<Mutex<Option<BOWBuilderEnum>>>,
+}
+
+enum BOWBuilderEnum {
+    I32(BOWIndexBuilder<i32>),
+    I64(BOWIndexBuilder<i64>),
+    F32(BOWIndexBuilder<f32>),
+}
+
+#[pymethods]
+impl PyBOWIndexBuilder {
+    /// Create a new BOWIndexBuilder.
+    ///
+    /// Args:
+    ///     folder: Directory where the index files will be written
+    ///     options: Optional BuilderOptions for checkpointing and memory control
+    ///     dtype: Value type for storage ("int32", "int64", "float32"). Default "int32".
+    ///     stemmer: Stemmer type ("snowball" or None). Default None.
+    ///     language: Language for the stemmer (e.g., "english"). Required if stemmer is set.
+    #[new]
+    #[pyo3(signature = (folder, options=None, dtype=None, stemmer=None, language=None))]
+    fn new(
+        folder: &str,
+        options: Option<&PyBuilderOptions>,
+        dtype: Option<&str>,
+        stemmer: Option<&str>,
+        language: Option<&str>,
+    ) -> PyResult<Self> {
+        let builder_options = match options {
+            Some(o) => o.0.clone(),
+            None => BuilderOptions::default(),
+        };
+        let path = Path::new(folder);
+        let dtype_str = dtype.unwrap_or("int32");
+
+        // Create analyzer if stemmer is specified
+        let analyzer = match stemmer {
+            Some("snowball") => {
+                let lang = language.unwrap_or("english");
+                let s = SnowballStemmer::new(lang).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("Invalid stemmer: {}", e))
+                })?;
+                Some(TextAnalyzer::new(Box::new(s)))
+            }
+            Some("none") | None => None,
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown stemmer '{}', expected 'snowball' or None",
+                    other
+                )));
+            }
+        };
+
+        let inner = match (dtype_str, analyzer) {
+            ("int32" | "i32", None) => {
+                BOWBuilderEnum::I32(BOWIndexBuilder::new(path, &builder_options))
+            }
+            ("int32" | "i32", Some(a)) => {
+                BOWBuilderEnum::I32(BOWIndexBuilder::with_analyzer(path, &builder_options, a))
+            }
+            ("int64" | "i64", None) => {
+                BOWBuilderEnum::I64(BOWIndexBuilder::new(path, &builder_options))
+            }
+            ("int64" | "i64", Some(a)) => {
+                BOWBuilderEnum::I64(BOWIndexBuilder::with_analyzer(path, &builder_options, a))
+            }
+            ("float32" | "f32", None) => {
+                BOWBuilderEnum::F32(BOWIndexBuilder::new(path, &builder_options))
+            }
+            ("float32" | "f32", Some(a)) => {
+                BOWBuilderEnum::F32(BOWIndexBuilder::with_analyzer(path, &builder_options, a))
+            }
+            (other, _) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown dtype '{}' for BOWIndexBuilder, expected int32, int64, or float32",
+                    other
+                )));
+            }
+        };
+
+        Ok(Self {
+            inner: Arc::new(Mutex::new(Some(inner))),
+        })
+    }
+
+    /// Add pre-tokenized postings. Document length is auto-computed from values.
+    ///
+    /// Args:
+    ///     docid: Unique document identifier (must be strictly increasing)
+    ///     terms: numpy array of term indices (dtype=uintp)
+    ///     values: numpy array of TF values (any numeric dtype)
+    fn add(&mut self, docid: DocId, terms: &PyArray1<TermIndex>, values: &PyAny) -> PyResult<()> {
+        let py = values.py();
+        let np = py.import("numpy")?;
+        let values_f32: &PyArray1<f32> = np
+            .call_method1("asarray", (values,))?
+            .call_method1("astype", ("float32",))?
+            .extract()?;
+
+        let terms_vec: Vec<TermIndex> = unsafe { terms.as_array() }.to_vec();
+        let values_vec: Vec<f32> = unsafe { values_f32.as_array() }.to_vec();
+
+        let mut inner = self.inner.blocking_lock();
+        let builder = inner.as_mut().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+        })?;
+
+        match builder {
+            BOWBuilderEnum::I32(b) => {
+                let vals: Vec<i32> = values_vec.iter().map(|&v| v as i32).collect();
+                b.add(docid, &terms_vec, &vals)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))
+            }
+            BOWBuilderEnum::I64(b) => {
+                let vals: Vec<i64> = values_vec.iter().map(|&v| v as i64).collect();
+                b.add(docid, &terms_vec, &vals)
+                    .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e)))
+            }
+            BOWBuilderEnum::F32(b) => b
+                .add(docid, &terms_vec, &values_vec)
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e))),
+        }
+    }
+
+    /// Add raw text (requires stemmer). Tokenizes, stems, computes TF,
+    /// and records document length automatically.
+    ///
+    /// Args:
+    ///     docid: Unique document identifier (must be strictly increasing)
+    ///     text: Raw document text
+    fn add_text(&mut self, docid: DocId, text: &str) -> PyResult<()> {
+        let mut inner = self.inner.blocking_lock();
+        let builder = inner.as_mut().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+        })?;
+
+        match builder {
+            BOWBuilderEnum::I32(b) => b
+                .add_text(docid, text)
+                .map(|_| ())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e))),
+            BOWBuilderEnum::I64(b) => b
+                .add_text(docid, text)
+                .map(|_| ())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e))),
+            BOWBuilderEnum::F32(b) => b
+                .add_text(docid, text)
+                .map(|_| ())
+                .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("{}", e))),
+        }
+    }
+
+    /// Analyze query text using the builder's text analyzer.
+    ///
+    /// Returns a dictionary mapping term indices to TF values.
+    /// Does NOT grow the vocabulary.
+    ///
+    /// Args:
+    ///     text: Query text to analyze
+    fn analyze_query(&self, text: &str) -> PyResult<HashMap<TermIndex, f32>> {
+        let inner = self.inner.blocking_lock();
+        let builder = inner.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+        })?;
+
+        match builder {
+            BOWBuilderEnum::I32(b) => Ok(b.analyze_query(text)),
+            BOWBuilderEnum::I64(b) => Ok(b.analyze_query(text)),
+            BOWBuilderEnum::F32(b) => Ok(b.analyze_query(text)),
+        }
+    }
+
+    /// Finalize the index and return a tuple of (Index, DocMetadata).
+    ///
+    /// Args:
+    ///     in_memory: If True, the returned Index holds data in RAM
+    ///
+    /// Returns:
+    ///     Tuple of (Index, DocMetadata)
+    fn build(&mut self, py: Python<'_>, in_memory: bool) -> PyResult<PyObject> {
+        let mut inner = self.inner.blocking_lock();
+        let builder = inner.take().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err("Builder already consumed by build()")
+        })?;
+
+        macro_rules! build_bow {
+            ($builder:expr) => {{
+                let (index, doc_meta) = $builder.build(in_memory).map_err(|e| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!("Build failed: {}", e))
+                })?;
+
+                let base = PyClassInitializer::from(PyIndexView {});
+                let py_index = base.add_subclass(PySparseIndex {
+                    index: Arc::new(Box::new(index)),
+                });
+                let py_index = Py::new(py, py_index)?.to_object(py);
+                let py_meta = Py::new(
+                    py,
+                    PyDocMetadata {
+                        inner: Arc::new(doc_meta),
+                    },
+                )?
+                .to_object(py);
+
+                Ok((py_index, py_meta).into_py(py))
+            }};
+        }
+
+        match builder {
+            BOWBuilderEnum::I32(b) => build_bow!(b),
+            BOWBuilderEnum::I64(b) => build_bow!(b),
+            BOWBuilderEnum::F32(b) => build_bow!(b),
+        }
+    }
+}
+
 /// Python module for sparse index construction, compression, and search.
 ///
 /// Provides classes for building, transforming, and querying sparse indices
@@ -1153,6 +1547,12 @@ fn impact_index(_py: Python, module: &PyModule) -> PyResult<()> {
     module.add_class::<PyDocument>()?;
     module.add_class::<PyDocumentStoreBuilder>()?;
     module.add_class::<PyDocumentStore>()?;
+
+    // BM25 / Scoring
+    module.add_class::<PyDocMetadata>()?;
+    module.add_class::<PyBM25Scoring>()?;
+    module.add_class::<PyScoredIndex>()?;
+    module.add_class::<PyBOWIndexBuilder>()?;
 
     Ok(())
 }

@@ -89,6 +89,21 @@ class Index(IndexView):
             print(doc.docid, doc.score)
     """
 
+    def with_scoring(
+        self, scoring: BM25Scoring, doc_meta: DocMetadata
+    ) -> ScoredIndex:
+        """Create a scored index that applies a scoring model to raw postings.
+
+        Args:
+            scoring: A scoring model (e.g., ``BM25Scoring()``).
+            doc_meta: Document metadata (from ``BOWIndexBuilder.build()``
+                or ``DocMetadata.load()``).
+
+        Returns:
+            A :class:`ScoredIndex` with the same search methods as Index.
+        """
+        ...
+
     @staticmethod
     def load(folder: str, in_memory: bool) -> Index:
         """Load an index from a directory.
@@ -575,4 +590,167 @@ class DocumentStore:
         self, key_name: str, key_values: list[str]
     ) -> Awaitable[list[Optional[Document]]]:
         """Async version of :meth:`get_by_key`."""
+        ...
+
+
+# --- BM25 / Scoring ---
+
+
+class DocMetadata:
+    """Document metadata (document lengths) for use with scoring models.
+
+    Loaded automatically when building with :class:`BOWIndexBuilder`, or
+    manually via :meth:`load`.
+    """
+
+    @staticmethod
+    def load(folder: str) -> DocMetadata:
+        """Load document metadata from a directory.
+
+        Args:
+            folder: Path to the directory containing ``docmeta.dat``
+                and ``docmeta.cbor``.
+        """
+        ...
+
+    def num_docs(self) -> int:
+        """Number of documents."""
+        ...
+
+    def avg_dl(self) -> float:
+        """Average document length."""
+        ...
+
+    def min_dl(self) -> int:
+        """Minimum document length."""
+        ...
+
+
+class BM25Scoring:
+    """BM25 scoring model.
+
+    Args:
+        k1: Term frequency saturation parameter (default: 1.2).
+        b: Length normalization parameter (default: 0.75).
+    """
+
+    def __init__(self, k1: float = 1.2, b: float = 0.75) -> None: ...
+
+
+class ScoredIndex(IndexView):
+    """A scored index that applies a scoring model (e.g., BM25) to raw postings.
+
+    Created via ``Index.with_scoring()`` or ``BOWIndexBuilder.build()``.
+    Supports the same search methods as :class:`Index`.
+    """
+
+    def search_wand(
+        self, py_query: dict[int, float], top_k: int
+    ) -> list[ScoredDocument]:
+        """Search using the WAND algorithm.
+
+        Args:
+            py_query: Dictionary mapping term indices to query weights.
+                For BM25, weights are boost factors (default 1.0).
+            top_k: Number of top results to return.
+
+        Returns:
+            List of :class:`ScoredDocument` sorted by decreasing score.
+        """
+        ...
+
+    def search_maxscore(
+        self, py_query: dict[int, float], top_k: int
+    ) -> list[ScoredDocument]:
+        """Search using the MaxScore algorithm.
+
+        Args:
+            py_query: Dictionary mapping term indices to query weights.
+            top_k: Number of top results to return.
+
+        Returns:
+            List of :class:`ScoredDocument` sorted by decreasing score.
+        """
+        ...
+
+
+class BOWIndexBuilder:
+    """Builds a bag-of-words index for traditional IR (BM25, TF-IDF).
+
+    Wraps :class:`IndexBuilder` and automatically computes document lengths.
+    Optionally integrates text analysis (stemming + vocabulary).
+
+    Example::
+
+        builder = impact_index.BOWIndexBuilder("/path/to/index", dtype="int32")
+        builder.add(0, terms, tf_values)
+        index, doc_meta = builder.build(in_memory=True)
+        scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
+        results = scored.search_wand(query, top_k=10)
+    """
+
+    def __init__(
+        self,
+        folder: str,
+        options: Optional[BuilderOptions] = None,
+        dtype: Optional[str] = None,
+        stemmer: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> None:
+        """Create a new BOWIndexBuilder.
+
+        Args:
+            folder: Directory where the index files will be written.
+            options: Optional :class:`BuilderOptions`.
+            dtype: Value type (``"int32"``, ``"int64"``, ``"float32"``).
+                Default ``"int32"``.
+            stemmer: Stemmer type (``"snowball"`` or ``None``).
+            language: Language for the stemmer (e.g., ``"english"``).
+        """
+        ...
+
+    def add(
+        self,
+        docid: int,
+        terms: npt.NDArray[np.uintp],
+        values: npt.NDArray,
+    ) -> None:
+        """Add pre-tokenized postings. Doc length is auto-computed.
+
+        Args:
+            docid: Unique document identifier (must be strictly increasing).
+            terms: numpy array of term indices (``dtype=np.uintp``).
+            values: numpy array of TF values.
+        """
+        ...
+
+    def add_text(self, docid: int, text: str) -> None:
+        """Add raw text (requires stemmer). Tokenizes, stems, computes TF.
+
+        Args:
+            docid: Unique document identifier (must be strictly increasing).
+            text: Raw document text.
+        """
+        ...
+
+    def analyze_query(self, text: str) -> dict[int, float]:
+        """Analyze query text. Does NOT grow the vocabulary.
+
+        Args:
+            text: Query text to analyze.
+
+        Returns:
+            Dictionary mapping term indices to TF values.
+        """
+        ...
+
+    def build(self, in_memory: bool) -> tuple[Index, DocMetadata]:
+        """Finalize the index and return ``(Index, DocMetadata)``.
+
+        Args:
+            in_memory: If ``True``, the returned Index holds data in RAM.
+
+        Returns:
+            Tuple of ``(Index, DocMetadata)``.
+        """
         ...

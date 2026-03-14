@@ -115,6 +115,103 @@ You can inspect individual posting lists. Each element is a
         print(f"Doc {posting.docid}: {posting.value}")
 
 
+.. _bm25:
+
+BM25 and Bag-of-Words Indexing
+------------------------------
+
+For traditional IR with BM25 scoring, use
+:class:`~impact_index.BOWIndexBuilder` instead of
+:class:`~impact_index.IndexBuilder`. It automatically tracks document
+lengths and optionally integrates text analysis (tokenization + stemming).
+
+Pre-tokenized input
+~~~~~~~~~~~~~~~~~~~
+
+If you already have term indices and term-frequency values:
+
+.. code-block:: python
+
+    import numpy as np
+    import impact_index
+
+    builder = impact_index.BOWIndexBuilder("/path/to/index", dtype="int32")
+
+    # Add documents: docid, term_indices, tf_values
+    terms = np.array([0, 5, 42], dtype=np.uintp)
+    tf = np.array([3, 1, 2], dtype=np.int32)
+    builder.add(0, terms, tf)
+
+    builder.add(1, np.array([2, 5, 8], dtype=np.uintp),
+                np.array([1, 4, 1], dtype=np.int32))
+
+    # Build returns (Index, DocMetadata)
+    index, doc_meta = builder.build(in_memory=True)
+
+    # Create a BM25-scored index
+    scored = index.with_scoring(
+        impact_index.BM25Scoring(k1=1.2, b=0.75),
+        doc_meta,
+    )
+
+    # Search with standard algorithms — query weights are boost factors
+    query = {0: 1.0, 5: 1.0}
+    results = scored.search_wand(query, top_k=10)
+    for doc in results:
+        print(f"Document {doc.docid}: {doc.score}")
+
+Raw text input with stemming
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+For direct text indexing with automatic tokenization, stemming, and
+vocabulary management:
+
+.. code-block:: python
+
+    import impact_index
+
+    builder = impact_index.BOWIndexBuilder(
+        "/path/to/index",
+        dtype="int32",
+        stemmer="snowball",
+        language="english",
+    )
+
+    builder.add_text(0, "the quick brown fox jumps over the lazy dog")
+    builder.add_text(1, "a quick brown cat jumps high")
+    builder.add_text(2, "the lazy dog sleeps all day")
+
+    # Analyze query (does NOT grow vocabulary — unknown terms are skipped)
+    query = builder.analyze_query("quick fox")
+
+    index, doc_meta = builder.build(in_memory=True)
+
+    scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
+    results = scored.search_wand(query, top_k=10)
+
+Loading document metadata separately
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you have already built an index and saved document metadata, you can
+load it later:
+
+.. code-block:: python
+
+    import impact_index
+
+    index = impact_index.Index.load("/path/to/index", in_memory=True)
+    doc_meta = impact_index.DocMetadata.load("/path/to/index")
+
+    scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
+
+When applying transforms (compression, splitting) that write to a new
+directory, copy the document metadata files using:
+
+.. code-block:: python
+
+    impact_index.DocMetadata.copy_files("/path/to/source", "/path/to/target")
+
+
 .. _compression:
 
 Compression and Transforms
