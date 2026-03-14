@@ -1275,6 +1275,64 @@ impl PyBOWIndexBuilder {
     }
 }
 
+#[cfg_attr(feature = "stub-gen", gen_stub_pyclass)]
+#[pyclass(name = "TextAnalyzer")]
+pub struct PyTextAnalyzer {
+    inner: TextAnalyzer,
+}
+
+#[cfg_attr(feature = "stub-gen", gen_stub_pymethods)]
+#[pymethods]
+impl PyTextAnalyzer {
+    /// Load a text analyzer from a built index directory.
+    ///
+    /// The index directory must contain a `vocab.cbor` file (written by
+    /// BOWIndexBuilder.build()).
+    ///
+    /// Args:
+    ///     folder: Path to the index directory
+    ///     stemmer: Stemmer to use ("snowball" or None)
+    ///     language: Language for snowball stemmer (default "english")
+    #[staticmethod]
+    #[pyo3(signature = (folder, stemmer=None, language=None))]
+    fn load(folder: &str, stemmer: Option<&str>, language: Option<&str>) -> PyResult<Self> {
+        let path = Path::new(folder);
+
+        let stemmer_box: Box<dyn crate::vocab::stemmer::Stemmer> = match stemmer {
+            Some("snowball") => {
+                let lang = language.unwrap_or("english");
+                let s = SnowballStemmer::new(lang).map_err(|e| {
+                    pyo3::exceptions::PyValueError::new_err(format!("Invalid stemmer: {}", e))
+                })?;
+                Box::new(s)
+            }
+            Some("none") | None => Box::new(crate::vocab::stemmer::NoStemmer),
+            Some(other) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "Unknown stemmer '{}', expected 'snowball' or None",
+                    other
+                )));
+            }
+        };
+
+        let analyzer = TextAnalyzer::load(path, stemmer_box).map_err(|e| {
+            pyo3::exceptions::PyIOError::new_err(format!(
+                "Failed to load text analyzer from '{}': {}",
+                folder, e
+            ))
+        })?;
+
+        Ok(Self { inner: analyzer })
+    }
+
+    /// Analyze a query string into term IDs and frequencies.
+    ///
+    /// Unknown terms (not in the vocabulary) are skipped.
+    fn analyze_query(&self, text: &str) -> HashMap<TermIndex, f32> {
+        self.inner.analyze_query(text)
+    }
+}
+
 /// Python module for sparse index construction, compression, and search.
 #[pymodule]
 fn impact_index(_py: Python, module: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -1303,6 +1361,7 @@ fn impact_index(_py: Python, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyBM25Scoring>()?;
     module.add_class::<PyScoredIndex>()?;
     module.add_class::<PyBOWIndexBuilder>()?;
+    module.add_class::<PyTextAnalyzer>()?;
 
     Ok(())
 }

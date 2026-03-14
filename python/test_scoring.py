@@ -87,6 +87,38 @@ class TestBOWIndexBuilder:
         results = scored.search_wand(query, 10)
         assert len(results) > 0
 
+    def test_text_analyzer_load(self, tmp_path):
+        d = str(tmp_path / "bow_analyzer")
+        import os
+
+        os.makedirs(d)
+
+        builder = impact_index.BOWIndexBuilder(
+            d, dtype="int32", stemmer="snowball", language="english"
+        )
+        builder.add_text(0, "the cat is running quickly")
+        builder.add_text(1, "dogs run faster than cats")
+        builder.add_text(2, "running is a good exercise")
+        builder.build(False)
+
+        # Load analyzer from built index
+        analyzer = impact_index.TextAnalyzer.load(
+            d, stemmer="snowball", language="english"
+        )
+        query = analyzer.analyze_query("running cats")
+        assert len(query) > 0
+
+        # Unknown terms should be skipped
+        query_unknown = analyzer.analyze_query("xyzzyplugh")
+        assert len(query_unknown) == 0
+
+        # Search with loaded analyzer's query
+        index = impact_index.Index.load(d, True)
+        doc_meta = impact_index.DocMetadata.load(d)
+        scored = index.with_scoring(impact_index.BM25Scoring(), doc_meta)
+        results = scored.search_wand(query, 10)
+        assert len(results) > 0
+
     def test_doc_metadata_copy_files(self, rng, tmp_path):
         src = str(tmp_path / "src")
         dst = str(tmp_path / "dst")
